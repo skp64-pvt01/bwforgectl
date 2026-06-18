@@ -1,7 +1,22 @@
 """Tests for :mod:`ssh_bw.importer`."""
 
-from ssh_bw.bwclient import BitwardenClient
+from pathlib import Path
+
+from ssh_bw.bwclient import TYPE_SSH_KEY, BitwardenClient
 from ssh_bw.importer import Importer, _always_yes, _always_no, ACTION_CREATED, ACTION_UNCHANGED, ACTION_DECLINED, ACTION_UPDATED
+
+# Re-use sample key material from conftest.
+ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_PRIVATE = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2g\n"
+    "FAKEKEYDATA1234567890==\n"
+    "-----END OPENSSH PRIVATE KEY-----\n"
+)
+SAMPLE_PUBLIC = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMMu2ws76gNisO5t30kw7eShE8AIZjqouXmCf0jJqJ31 "
+    "tester@example.com\n"
+)
 
 
 def _client(bw_path: str) -> BitwardenClient:
@@ -103,3 +118,107 @@ class TestImporter:
         pgp_notes = imp.load_pgp_notes()
         assert len(pgp_notes) == 1
         assert pgp_notes[0]["name"] == "PGP: My GPG Key"
+
+    # ------------------------------------------------------------------ #
+    # sync_from_server tests
+    # ------------------------------------------------------------------ #
+    def test_sync_from_server_creates_new_key(self, fake_vault, fake_bw_path, tmp_path):
+        client = _client(fake_bw_path)
+        client.unlock("testpw")
+        imp = Importer(client)
+
+        # Seed a vault item via bw client directly.
+        template = client.get_template("item")
+        template["type"] = TYPE_SSH_KEY
+        template["name"] = "SSH: id_ed25519"
+        template["sshKey"] = {
+            "privateKey": SAMPLE_PRIVATE,
+            "publicKey": SAMPLE_PUBLIC,
+            "keyFingerprint": "SHA256:abc123",
+        }
+        client.create_item(template)
+
+        out_dir = tmp_path / "out_ssh"
+        results = imp.sync_from_server(out_dir, confirm_overwrite=True)
+        assert len(results) == 1
+        assert results[0].action == ACTION_CREATED
+        assert results[0].name == "id_ed25519"
+        assert (out_dir / "id_ed25519").is_file()
+        assert (out_dir / "id_ed25519.pub").is_file()
+        assert (out_dir / "id_ed25519").stat().st_mode & 0o777 == 0o600
+
+    def test_sync_from_server_skips_identical(self, fake_vault, fake_bw_path, tmp_path):
+        client = _client(fake_bw_path)
+        client.unlock("testpw")
+        imp = Importer(client)
+
+        template = client.get_template("item")
+        template["type"] = TYPE_SSH_KEY
+        template["name"] = "SSH: id_ed25519"
+        template["sshKey"] = {
+            "privateKey": SAMPLE_PRIVATE,
+            "publicKey": SAMPLE_PUBLIC,
+            "keyFingerprint": "SHA256:abc123",
+        }
+        client.create_item(template)
+
+        out_dir = tmp_path / "out_ssh"
+        imp.sync_from_server(out_dir, confirm_overwrite=True)
+        results = imp.sync_from_server(out_dir, confirm_overwrite=False)
+        assert len(results) == 1
+        assert results[0].action == ACTION_UNCHANGED
+
+    def test_sync_from_server_overwrite_declined(self, fake_vault, fake_bw_path, tmp_path):
+        client = _client(fake_bw_path)
+        client.unlock("testpw")
+        imp = Importer(client)
+
+        template = client.get_template("item")
+        template["type"] = TYPE_SSH_KEY
+        template["name"] = "SSH: id_ed25519"
+        template["sshKey"] = {
+            "privateKey": SAMPLE_PRIVATE,
+            "publicKey": SAMPLE_PUBLIC,
+            "keyFingerprint": "SHA256:abc123",
+        }
+        client.create_item(template)
+
+        out_dir = tmp_path / "out_ssh"
+        imp.sync_from_server(out_dir, confirm_overwrite=True)
+
+        # Modify local key so it differs from vault
+        priv = out_dir / "id_ed25519"
+        priv.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nMODIFIED\n-----END OPENSSH PRIVATE KEY-----\n")
+
+        results = imp.sync_from_server(out_dir, confirm_overwrite=False)
+        assert len(results) == 1
+        assert results[0].action == ACTION_DECLINED
+
+    def test_sync_from_server_overwrite_confirmed(self, fake_vault, fake_bw_path, tmp_path):
+        client = _client(fake_bw_path)
+        client.unlock("testpw")
+        imp = Importer(client)
+
+        template = client.get_template("item")
+        template["type"] = TYPE_SSH_KEY
+        template["name"] = "SSH: id_ed25519"
+        template["sshKey"] = {
+            "privateKey": SAMPLE_PRIVATE,
+            "publicKey": SAMPLE_PUBLIC,
+            "keyFingerprint": "SHA256:abc123",
+        }
+        client.create_item(template)
+
+        out_dir = tmp_path / "out_ssh"
+        imp.sync_from_server(out_dir, confirm_overwrite=True)
+
+        # Modify local key
+        priv = out_dir / "id_ed25519"
+        priv.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nMODIFIED\n-----END OPENSSH PRIVATE KEY-----\n")
+
+        results = imp.sync_from_server(out_dir, confirm_overwrite=True)
+        assert len(results) == 1
+        assert results[0].action == ACTION_UPDATED
+        # Verify the vault content was written back
+        content = priv.read_text()
+        assert "FAKEKEYDATA" in content or "b3BlbnN" in content

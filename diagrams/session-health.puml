@@ -1,0 +1,53 @@
+@startuml session-health
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign direction
+
+title Session health check flow
+
+participant "cli.py\ncmd_sync/list/output/delete" as CLI
+participant "BitwardenClient" as BWC
+participant "bw CLI\n(subprocess)" as BW
+participant "bw serve\n(REST)" as BWSRV
+
+== Vault operation call ==
+CLI -> BWC : list_items() / create_item() / edit_item() / delete_item()
+
+== _ensure_vault_ready() ==
+BWC -> BWC : _ensure_vault_ready()
+
+group verify_session
+  BWC -> BW : bw status --session {key}
+  BW --> BWC : { "status": "unlocked", ... }
+  alt locked or unauthenticated
+    BWC -> BWC : email + password available?
+    alt yes
+      BWC -> BW : bw unlock --password {pw}\n        --raw
+      BW --> BWC : new session key
+      BWC -> BWC : self.session = new_key
+    else no credentials
+      BWC -> CLI : BitwardenError(\n  "Vault session invalid ...")
+      CLI -> CLI : exit code 2
+    end
+  end
+end
+
+== Transport dispatch ==
+
+alt CLI mode (default)
+  BWC -> BW : bw list items --search SSH:\n  --session {key}
+  BW --> BWC : JSON stdout
+else REST mode (--use-serve)
+  BWC -> BWSRV : GET /list/objects/items\n  Authorization: Bearer {key}
+  BWSRV --> BWC : JSON response
+end
+
+BWC --> CLI : parsed items
+
+== Timeout + stdin sentinel ==
+
+note over BWC : Every bw subprocess call:\n  - 30s timeout\n  - input="" (empty stdin)\n  Prevents hang on password prompt
+
+== SIGKILL detection ==
+note over BWC : Exit code -9 detected →\n  "bw was killed (SIGKILL)"\n  → auto re-auth + retry
+
+@enduml

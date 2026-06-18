@@ -1,0 +1,43 @@
+@startuml modules
+skinparam componentStyle rectangle
+skinparam backgroundColor #FEFEFE
+
+title Module dependency diagram
+
+package "ssh_bw" {
+  [cli.py\nargparse dispatch\ncmd_store / cmd_sync / cmd_list / cmd_output / cmd_delete] as CLI
+  [bwclient.py\nBitwardenClient\nCLI + REST transport] as BWCLIENT
+  [credentials.py\nCredentialStore\nKeyring / encrypted file] as CRED
+  [importer.py\nImporter\nSync orchestration] as IMPORTER
+  [sshscan.py\nscan_ssh_dir()\n~/.ssh key discovery] as SSHSCAN
+  [pgp.py\nis_pgp_note()\nPGP note heuristic] as PGP
+}
+
+package "External" <<Cloud>> {
+  [bw CLI] as BWCLI
+  [bw serve :8087] as BWSRV
+  [ssh-keygen] as SSHKG
+  [OS Keyring] as KEYRING
+  [~/.ssh/ directory] as SSHDIR
+}
+
+CLI --> BWCLIENT : "constructs"
+CLI --> CRED : "constructs"
+CLI --> IMPORTER : "constructs Importer(client)"
+CLI --> SSHSCAN : "uses SSHKeyPair"
+CLI --> PGP : "calls is_pgp_note()"
+
+IMPORTER --> BWCLIENT : "list / create / edit / delete"
+IMPORTER --> SSHSCAN : "scan_ssh_dir()"
+IMPORTER --> PGP : "is_pgp_note()"
+
+BWCLIENT --> BWCLI : "subprocess.run(bw ...)"
+BWCLIENT --> BWSRV : "http://127.0.0.1 (optional)"
+
+SSHSCAN --> SSHKG : "ssh-keygen -lf / -y"
+SSHSCAN --> SSHDIR : "reads key files"
+
+CRED --> KEYRING : "keyring.get/set_password"
+CRED --> SSHDIR : "credentials.enc (fallback)"
+
+@enduml

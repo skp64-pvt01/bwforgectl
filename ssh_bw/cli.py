@@ -36,8 +36,20 @@ from .pgp import is_pgp_note
 from .sshscan import SSHKeyPair
 
 
-def _progress(msg: str, quiet: bool = False) -> None:
-    if not quiet:
+def _verbose_level(args: argparse.Namespace) -> int:
+    """Resolve verbosity: --quiet / BW_QUIET → 0, -v count → N, default 1."""
+    if getattr(args, "quiet", False) or os.environ.get("BW_QUIET"):
+        return 0
+    return getattr(args, "verbose", 1)
+
+
+def _no_sync(args: argparse.Namespace) -> bool:
+    """Resolve --no-sync / BW_NO_SYNC."""
+    return getattr(args, "no_sync", False) or bool(os.environ.get("BW_NO_SYNC"))
+
+
+def _progress(msg: str, verbose: int = 1, level: int = 1) -> None:
+    if verbose >= level:
         print(msg, file=sys.stderr, flush=True)
 
 
@@ -49,36 +61,70 @@ def _resolve_credentials(args: argparse.Namespace) -> Credentials:
     email = args.email or os.environ.get("BW_EMAIL")
     password = args.password or os.environ.get("BW_PASSWORD")
 
-    if (not password) and args.use_stored:
+    should_try_store = (
+        args.use_stored
+        or os.environ.get("BW_STORE_PASSPHRASE")
+    )
+    store_failed = False
+    store = None
+    passphrase = None
+    if (not password) and should_try_store:
         store = CredentialStore(args.config_dir, prefer_keyring=not args.no_keyring)
-        passphrase = None
         if store.backend == "encrypted-file":
-            passphrase = args.store_passphrase or os.environ.get(
-                "BW_STORE_PASSPHRASE"
-            ) or getpass.getpass("Credential store passphrase: ")
+            passphrase = args.store_passphrase or os.environ.get("BW_STORE_PASSPHRASE")
+            if not passphrase:
+                passphrase = getpass.getpass("Credential store passphrase: ")
         try:
             stored = store.load(store_passphrase=passphrase)
             email = email or stored.email
             password = password or stored.password
         except CredentialError as exc:
-            print(f"warning: {exc}", file=sys.stderr)
+            print(f"error: could not open credential store: {exc}", file=sys.stderr)
+            store_failed = True
 
+    prompted = False
     if not email:
         email = input("Bitwarden email: ").strip()
+        prompted = True
     if not password:
         password = getpass.getpass("Bitwarden master password: ")
-    return Credentials(email=email, password=password)
+        prompted = True
+
+    creds = Credentials(email=email, password=password)
+
+    # If the store was attempted but failed and we just got fresh credentials
+    # from the interactive prompt, offer to update the store.
+    if store_failed and prompted and store is not None:
+        answer = input(
+            "Update the credential store with these credentials? [y/N] "
+        ).strip().lower()
+        if answer in {"y", "yes"}:
+            p = args.store_passphrase or os.environ.get("BW_STORE_PASSPHRASE")
+            if store.backend == "encrypted-file" and not p:
+                p = getpass.getpass("Choose a credential-store passphrase: ")
+                confirm = getpass.getpass("Confirm passphrase: ")
+                if p != confirm:
+                    print("error: passphrases do not match, store not updated",
+                          file=sys.stderr)
+                    return creds
+            store.save(creds, store_passphrase=p)
+            print(f"Credential store updated using the '{store.backend}' backend.",
+                  file=sys.stderr)
+
+    return creds
 
 
 def _make_client(args: argparse.Namespace, *, need_auth: bool = True) -> BitwardenClient:
-    quiet = getattr(args, "quiet", False)
+    verbose = _verbose_level(args)
     creds = _resolve_credentials(args) if need_auth else None
+    bw_path = args.bw_path or os.environ.get("BW_PATH", "bw")
+    serve_port = args.serve_port or int(os.environ.get("SERVE_PORT", 8087))
     client = BitwardenClient(
-        bw_path=args.bw_path,
+        bw_path=bw_path,
         session=args.session or os.environ.get("BW_SESSION"),
         use_serve=args.use_serve,
-        serve_port=args.serve_port,
-        quiet=quiet,
+        serve_port=serve_port,
+        verbose=verbose,
         email=creds.email if creds else None,
         password=creds.password if creds else None,
     )
@@ -125,28 +171,38 @@ def _confirm_update_interactive(pair: SSHKeyPair, record) -> bool:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    quiet = getattr(args, "quiet", False)
+    verbose = _verbose_level(args)
     client = _make_client(args)
     try:
-        if not args.no_sync:
+        if not _no_sync(args):
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
 
-        ssh_dir = args.ssh_dir or os.path.expanduser("~/.ssh")
-        _progress(f"  scanning {ssh_dir} …", quiet)
+        from_server = getattr(args, "from_server", False)
 
-        if args.update and args.yes:
-            confirm = lambda p, r: True  # noqa: E731
-        elif args.update:
-            confirm = _confirm_update_interactive
+        if from_server:
+            _progress(f"  pulling keys from vault …", verbose)
+            confirm_overwrite = args.yes
+            results = importer.sync_from_server(
+                args.ssh_dir,
+                confirm_overwrite=confirm_overwrite,
+            )
         else:
-            confirm = lambda p, r: False  # noqa: E731
+            ssh_dir = args.ssh_dir or os.path.expanduser("~/.ssh")
+            _progress(f"  scanning {ssh_dir} …", verbose)
 
-        results = importer.sync_directory(
-            args.ssh_dir,
-            confirm_update=confirm,
-            derive_missing_public=not args.no_derive,
-        )
+            if args.update and args.yes:
+                confirm = lambda p, r: True  # noqa: E731
+            elif args.update:
+                confirm = _confirm_update_interactive
+            else:
+                confirm = lambda p, r: False  # noqa: E731
+
+            results = importer.sync_directory(
+                args.ssh_dir,
+                confirm_update=confirm,
+                derive_missing_public=not args.no_derive,
+            )
     finally:
         client.stop_serve()
 
@@ -165,13 +221,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    quiet = getattr(args, "quiet", False)
+    verbose = _verbose_level(args)
     client = _make_client(args)
     try:
-        if not args.no_sync:
+        if not _no_sync(args):
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
-        _progress("  loading items from vault …", quiet)
+        _progress("  loading items from vault …", verbose)
         ssh_records = importer.load_ssh_records() if args.type in ("ssh", "all") else []
         pgp_notes = importer.load_pgp_notes() if args.type in ("pgp", "all") else []
     finally:
@@ -200,17 +256,17 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_output(args: argparse.Namespace) -> int:
-    quiet = getattr(args, "quiet", False)
+    verbose = _verbose_level(args)
     client = _make_client(args)
     try:
-        if not args.no_sync:
+        if not _no_sync(args):
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
         out_dir = Path(args.out_dir).expanduser() if args.out_dir else None
         if out_dir:
             out_dir.mkdir(parents=True, exist_ok=True)
 
-        _progress(f"  exporting {args.type} items …", quiet)
+        _progress(f"  exporting {args.type} items …", verbose)
         if args.type == "ssh":
             count = _output_ssh(importer, args, out_dir)
         else:
@@ -220,7 +276,7 @@ def cmd_output(args: argparse.Namespace) -> int:
     if count == 0:
         print("No matching items found.", file=sys.stderr)
         return 1
-    _progress(f"  exported {count} item(s)", quiet)
+    _progress(f"  exported {count} item(s)", verbose)
     return 0
 
 
@@ -269,17 +325,17 @@ def _output_pgp(importer: Importer, args: argparse.Namespace, out_dir) -> int:
 
 
 def cmd_delete(args: argparse.Namespace) -> int:
-    quiet = getattr(args, "quiet", False)
+    verbose = _verbose_level(args)
     identifier = args.id or args.name
     if not identifier:
         print("error: provide --id or --name", file=sys.stderr)
         return 1
     client = _make_client(args)
     try:
-        if not args.no_sync:
+        if not _no_sync(args):
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
-        _progress("  locating matching items …", quiet)
+        _progress("  locating matching items …", verbose)
         # Resolve targets first for confirmation.
         records = importer.load_ssh_records()
         targets = [
@@ -297,7 +353,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
             if input("Proceed? [y/N] ").strip().lower() not in {"y", "yes"}:
                 print("Aborted.")
                 return 0
-        _progress(f"  deleting {len(targets)} item(s) …", quiet)
+        _progress(f"  deleting {len(targets)} item(s) …", verbose)
         results = importer.delete_ssh(identifier, permanent=args.permanent)
     finally:
         client.stop_serve()
@@ -311,95 +367,156 @@ def cmd_delete(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 def _add_auth_args(parser: argparse.ArgumentParser) -> None:
     """Add credential-related arguments to a subparser."""
-    g = parser.add_argument_group("auth / credentials")
-    g.add_argument("--email", help="Bitwarden account email.")
-    g.add_argument("--password", help="Master password (insecure on shared hosts).")
-    g.add_argument("--session", help="Existing BW_SESSION key to reuse.")
+    g = parser.add_argument_group("authentication / credentials")
+    g.add_argument("--email",
+                   help="Bitwarden account email (env: BW_EMAIL).")
+    g.add_argument("--password",
+                   help="Master password (insecure on shared hosts; "
+                        "use --use-stored or env: BW_PASSWORD).")
+    g.add_argument("--session",
+                   help="Existing bw session key to reuse (env: BW_SESSION).")
     g.add_argument("--use-stored", action="store_true",
-                   help="Load saved credentials from the secure store.")
+                   help="Load credentials previously saved with 'store-credentials' subcommand.")
     g.add_argument("--store-passphrase",
-                   help="Passphrase for the encrypted-file credential store.")
-    g.add_argument("--config-dir", help="Credential-store directory.")
+                   help="Passphrase protecting the encrypted credential file "
+                        "(env: BW_STORE_PASSPHRASE; required when --no-keyring "
+                        "and no OS keyring available).")
+    g.add_argument("--config-dir",
+                   help="Directory for the credential store (default: ~/.config/ssh_bw).")
     g.add_argument("--no-keyring", action="store_true",
-                   help="Do not use the OS keyring; use the encrypted file backend.")
+                   help="Force encrypted-file backend instead of the OS keyring.")
     g.add_argument("--name-prefix", default="SSH: ",
-                   help="Prefix used for SSH key item names in the vault.")
+                   help="Prefix for SSH key item names in the vault (default: 'SSH: ').")
 
 
 def _add_common_opts(parser: argparse.ArgumentParser) -> None:
     """Add general CLI options to a subparser (used by vault-ops subcommands)."""
-    g = parser.add_argument_group("options")
-    g.add_argument("--json", action="store_true", help="Emit JSON output.")
+    g = parser.add_argument_group("output options")
+    g.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of human-friendly text.")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ssh_bw",
+        prog="ssh-bw",
         description="Sync local ~/.ssh key pairs (and inspect PGP notes) with Bitwarden.",
+        epilog=(
+            "Environment variables:\n"
+            "  BW_EMAIL             Bitwarden account email (alternative to --email).\n"
+            "  BW_PASSWORD          Master password (alternative to --password).\n"
+            "  BW_SESSION           Existing bw session key (alternative to --session).\n"
+            "  BW_STORE_PASSPHRASE  Passphrase for the encrypted credential store.\n"
+            "  BW_PATH              Path to the bw executable (default: bw).\n"
+            "  BW_NO_SYNC           Set to 1 to skip 'bw sync' before each operation.\n"
+            "  BW_QUIET             Set to 1 to suppress progress/diagnostic output.\n"
+            "  SERVE_PORT           Port for 'bw serve' when --use-serve is active (default: 8087).\n"
+            "\n"
+            "Examples:\n"
+            "  ssh-bw store-credentials --email you@example.com\n"
+            "    Save your credentials for later use (OS keyring or encrypted file).\n\n"
+            "  ssh-bw sync --update\n"
+            "    Scan ~/.ssh and push new/changed keys into the vault.\n\n"
+            "  ssh-bw sync --from-server --yes\n"
+            "    Pull all vault SSH keys onto local disk (overwriting existing).\n\n"
+            "  ssh-bw list --type ssh\n"
+            "    List every SSH key stored in the vault.\n\n"
+            "  ssh-bw output --type ssh --name github --out-dir ./export\n"
+            "    Extract a specific vault SSH key to a file.\n\n"
+            "  ssh-bw delete --name id_ed25519\n"
+            "    Remove an SSH key record from the vault.\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
     # Global CLI options (must come BEFORE the subcommand in argv).
-    parser.add_argument("--bw-path", default="bw", help="Path to the bw executable.")
+    parser.add_argument("--bw-path", default="bw",
+                        help="Path (or name on PATH) of the Bitwarden CLI executable "
+                             "(env: BW_PATH, default: bw).")
     parser.add_argument("--use-serve", action="store_true",
-                        help="Use 'bw serve' REST API for vault operations.")
-    parser.add_argument("--serve-port", type=int, default=8087, help="bw serve port.")
+                        help="Use 'bw serve' REST API for vault operations "
+                             "(faster after initial handshake).")
+    parser.add_argument("--serve-port", type=int, default=8087,
+                        help="Port for 'bw serve' when --use-serve is active "
+                             "(env: SERVE_PORT, default: 8087).")
     parser.add_argument("--no-sync", action="store_true",
-                        help="Skip 'bw sync' before operating.")
+                        help="Skip 'bw sync' before each operation "
+                             "(env: BW_NO_SYNC, useful when you synced recently).")
     parser.add_argument("--quiet", action="store_true",
-                        help="Suppress progress messages on stderr.")
+                        help="Suppress all progress and diagnostic output "
+                             "(env: BW_QUIET, sets verbose=0).")
+    parser.add_argument("--verbose", "-v", action="count", default=1,
+                        help="Increase verbosity:  -v = progress (default), "
+                             "-vv = diagnostics, -vvv = debug (raw bw output).")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("store-credentials",
-                       help="Persist credentials securely.")
+                       help="Save Bitwarden credentials to OS keyring (or encrypted file) "
+                            "for later use with --use-stored.")
     _add_auth_args(p)
     p.set_defaults(func=cmd_store_credentials)
 
     p = sub.add_parser("forget-credentials",
-                       help="Remove stored credentials.")
+                       help="Remove previously stored credentials from the keyring/encrypted file.")
     _add_auth_args(p)
     p.set_defaults(func=cmd_forget_credentials)
 
     p = sub.add_parser("sync",
-                       help="Scan ~/.ssh and import/update keys into Bitwarden.")
+                        help="Synchronise SSH key pairs between ~/.ssh and the Bitwarden vault.")
     _add_auth_args(p)
     _add_common_opts(p)
-    p.add_argument("--ssh-dir", help="Directory to scan (default ~/.ssh).")
+    p.add_argument("--ssh-dir",
+                   help="Directory to scan for local keys (default: ~/.ssh).")
+    direction = p.add_mutually_exclusive_group()
+    direction.add_argument("--from-disk", action="store_true", dest="from_disk",
+                           help="Push local SSH keys into the vault (default).")
+    direction.add_argument("--from-server", action="store_true", dest="from_server",
+                           help="Pull SSH keys from the vault onto local disk.")
     p.add_argument("--update", action="store_true",
-                   help="Offer to update entries that differ.")
+                   help="When a local key differs from its vault entry, prompt to update the vault.")
     p.add_argument("--yes", action="store_true",
-                   help="Assume yes to update prompts (non-interactive).")
+                   help="Non-interactive mode: auto-confirm updates (--update) "
+                        "or overwrites (--from-server).")
     p.add_argument("--no-derive", action="store_true",
-                   help="Do not derive a missing public key from the private key.")
-    p.set_defaults(func=cmd_sync)
+                   help="Skip deriving the public key from the private key when only "
+                        "a private key is found.")
+    p.set_defaults(func=cmd_sync, from_disk=True, from_server=False)
 
     p = sub.add_parser("list",
-                       help="List SSH keys and/or PGP notes in the vault.")
+                       help="List SSH keys and/or PGP notes stored in the vault.")
     _add_auth_args(p)
     _add_common_opts(p)
-    p.add_argument("--type", choices=["ssh", "pgp", "all"], default="all")
+    p.add_argument("--type", choices=["ssh", "pgp", "all"], default="all",
+                   help="Type of items to show (default: all).")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("output",
-                       help="Output (dump) SSH keys or PGP notes.")
+                       help="Dump SSH keys or PGP notes to stdout or files.")
     _add_auth_args(p)
     _add_common_opts(p)
-    p.add_argument("--type", choices=["ssh", "pgp"], default="ssh")
-    p.add_argument("--name", help="Filter by (substring of) item name.")
-    p.add_argument("--out-dir", help="Write files here instead of stdout.")
+    p.add_argument("--type", choices=["ssh", "pgp"], default="ssh",
+                   help="Type of items to output (default: ssh).")
+    p.add_argument("--name",
+                   help="Only output items whose name contains this substring.")
+    p.add_argument("--out-dir",
+                   help="Write each key/note to a separate file in this directory "
+                        "instead of printing to stdout.")
     p.add_argument("--show-private", action="store_true",
-                   help="Also print private keys to stdout (ssh only).")
+                   help="Also include the private key when writing to stdout "
+                        "(only relevant for --type ssh).")
     p.set_defaults(func=cmd_output)
 
     p = sub.add_parser("delete",
-                       help="Delete an SSH record from the vault.")
+                       help="Delete an SSH key record from the vault.")
     _add_auth_args(p)
     _add_common_opts(p)
-    p.add_argument("--id", help="Item id to delete.")
-    p.add_argument("--name", help="Item name (or bare key name) to delete.")
+    p.add_argument("--id",
+                   help="Vault item id of the record to delete.")
+    p.add_argument("--name",
+                   help="Item name (or bare key name without the 'SSH: ' prefix) to delete.")
     p.add_argument("--permanent", action="store_true",
-                   help="Permanently delete instead of moving to trash.")
-    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt.")
+                   help="Permanently purge the item instead of soft-deleting (moving to trash).")
+    p.add_argument("--yes", action="store_true",
+                   help="Skip the interactive confirmation prompt.")
     p.set_defaults(func=cmd_delete)
 
     return parser

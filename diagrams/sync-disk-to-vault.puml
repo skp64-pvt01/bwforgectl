@@ -1,0 +1,63 @@
+@startuml sync-disk-to-vault
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign direction
+
+title Sync: disk → vault (ssh_bw sync)
+
+actor User as U
+participant "cli.py\ncmd_sync" as CLI
+participant "BitwardenClient" as BWC
+participant "Importer" as IMP
+collections "Vault\n(bw list)" as VAULT
+participant "sshscan\nscan_ssh_dir()" as SCAN
+database "~/.ssh/" as DISK
+
+== 1. Initialise ==
+U -> CLI : ssh_bw sync --update
+CLI -> BWC : ensure_session(email, password)
+BWC -> BWC : verify_session()
+alt session invalid
+  BWC -> BWC : unlock(password)
+end
+CLI -> BWC : sync()
+
+== 2. Scan disk ==
+CLI -> IMP : Importer(client)
+CLI -> IMP : sync_directory(ssh_dir)
+IMP -> SCAN : scan_ssh_dir(ssh_dir)
+SCAN -> DISK : enumerate files
+DISK --> SCAN : key pairs
+SCAN -> SCAN : ssh-keygen -lf / -y
+SCAN --> IMP : List[SSHKeyPair]
+
+== 3. Fetch vault state ==
+IMP -> BWC : list_items()
+BWC -> VAULT : bw list items --search SSH:
+VAULT --> BWC : items
+BWC --> IMP : List[SSHRecord]
+
+== 4. Match & sync ==
+loop for each SSHKeyPair
+  IMP -> IMP : _find_match(pair, records)
+  alt no match
+    IMP -> IMP : _build_item(pair, template)
+    IMP -> BWC : create_item(item)
+    BWC --> IMP : created item
+    IMP --> CLI : SyncResult(CREATED)
+  else match & identical
+    IMP --> CLI : SyncResult(UNCHANGED)
+  else match & differs
+    IMP -> CLI : _diagnostic(diff details)
+    CLI -> User : confirm_update prompt?
+    alt confirmed
+      IMP -> BWC : edit_item(id, item)
+      IMP --> CLI : SyncResult(UPDATED)
+    else declined
+      IMP --> CLI : SyncResult(DECLINED)
+    end
+  end
+end
+
+CLI --> U : summary table
+
+@enduml

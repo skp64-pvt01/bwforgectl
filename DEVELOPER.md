@@ -40,20 +40,19 @@ debian/
 
 ### Module dependency graph
 
-```
-cli.py
-  ├─ bwclient.py  ←─ fake_bw.py (test double)
-  ├─ credentials.py
-  ├─ importer.py
-  │    ├─ bwclient.py
-  │    ├─ sshscan.py
-  │    └─ pgp.py
-  ├─ sshscan.py
-  └─ pgp.py
-```
+![Module dependency diagram](diagrams/modules.png)
 
-No circular dependencies. Each module can be unit-tested independently through
-its public API.
+The import graph has no circular dependencies — each module can be unit-tested
+independently through its public API.
+
+### Core classes
+
+![Class diagram](diagrams/classes.png)
+
+The two main vault-facing classes are **`BitwardenClient`** (low-level transport)
+and **`Importer`** (sync orchestration).  Data flows through four dataclasses:
+`SSHKeyPair`, `SSHRecord`, `SyncResult`, and `BWResult`.  Credentials are
+managed by `CredentialStore` (keyring or encrypted file).
 
 ## Module design
 
@@ -94,7 +93,9 @@ uses the CLI path. Mode is transparent to callers — `list_items`, `create_item
 
 The Bitwarden CLI sometimes invalidates sessions or prompts for the master
 password when the session key is missing/stale.  `ssh-bw` handles this with
-three mechanisms:
+three mechanisms (illustrated below):
+
+![Session health check flow](diagrams/session-health.png)
 
 1. **`verify_session()`** — runs `bw status` and checks that the vault reports
    `"unlocked"` and that the client holds a non-`None` session key.
@@ -124,11 +125,18 @@ Two backends, auto-selected:
 
 The `CredentialStore` class is pure — it does not interact with the vault. The
 CLI layer (`_resolve_credentials` in `cli.py`) decides the order of precedence:
-CLI flags → env vars → credential store → interactive prompt.
+
+![Credential resolution flow](diagrams/credential-resolution.png)
+
+**Precedence:** CLI flags → env vars → credential store → interactive prompt.
 
 ### `importer.py` — Sync engine
 
-Orchestrates the full sync cycle:
+Orchestrates the full sync cycle. Two directions are supported:
+
+**Disk → Vault** (`ssh_bw sync`, the default):
+
+![Sync disk → vault](diagrams/sync-disk-to-vault.png)
 
 1. `scan_ssh_dir()` discovers local SSH key pairs.
 2. `load_ssh_records()` fetches existing SSH key items from the vault.
@@ -142,6 +150,16 @@ Orchestrates the full sync cycle:
 The matching strategy prioritises fingerprint as a stable identity across
 re-keying. Name match handles prefix changes. Private-key body match catches
 import-from-backup scenarios where all prior metadata is lost.
+
+**Vault → Disk** (`ssh_bw sync --from-server`):
+
+![Sync vault → disk](diagrams/sync-vault-to-disk.png)
+
+1. `load_ssh_records()` fetches all SSH key items from the vault.
+2. For each record, strip the `SSH:` prefix and write `<name>` / `<name>.pub`.
+3. Private key files are created with `0600` permissions.
+4. Existing matching files are left untouched; differing files are overwritten
+   only when `--yes` is given (or declined otherwise).
 
 ### `pgp.py` — PGP note detection
 
@@ -249,11 +267,18 @@ pip install dist/ssh_bw-1.0.0-py3-none-any.whl
 - Error handling: custom exception hierarchy rooted in `BitwardenError`
   and `CredentialError`
 
-## Progress reporting
+## Progress and diagnostic levels
 
 All progress/status messages are printed to **stderr** so they never interfere
-with `--json` output or piped stdout.  The `--quiet` global flag suppresses
-them entirely.
+with `--json` output or piped stdout.  Three levels are controlled by `-v` /
+`--quiet`:
+
+| Flag | `verbose` | Output |
+|------|-----------|--------|
+| `--quiet` | 0 | Silent (except errors) |
+| *(default)* | 1 | Progress: scan counts, per-key status |
+| `-v` | 2 | Diagnostics: fingerprints, field diffs, item IDs |
+| `-vv` | 3 | Debug: raw `bw` subprocess output |
 
 Output examples:
 
@@ -274,25 +299,28 @@ $ ssh-bw sync --update
 ```
 
 ```
-$ ssh-bw --use-serve sync
+$ ssh-bw --use-serve sync -v
   starting bw serve on 127.0.0.1:8087 …
   … waiting for bw serve (3s)
   … waiting for bw serve (7s)
   bw serve ready (8.2s)
+  found 2 key pair(s) on disk
+    local fp: SHA256:abc123  encrypted: False
+    diff  local fp: SHA256:abc123  vault fp: SHA256:def456  (item: abc-def-123)
+      diff: public_key DIFFERS
+  loaded 2 SSH key record(s) from vault
 ```
 
 How it works:
 
-- **`BitwardenClient`** has a `_progress(msg)` method and a `quiet` field.
-  Calls are placed in `start_serve()` (shows wait time dots), `ensure_session()`,
-  `login()`, `unlock()`, `lock()`, and `sync()`.
-- **`Importer`** delegates to `self.client.quiet` and reports scan counts,
-  vault record counts, and per-key progress (`[N/M] processing …`).
-- **`cli.py`** has a module-level `_progress(msg, quiet)` helper and adds
-  progress in every command function (e.g. "scanning …", "loading items from
-  vault …", "exporting N items …").
-- **`--quiet`** is a global parser flag.  It is passed through to
-  `BitwardenClient(quiet=True)` and surfaces everywhere via `client.quiet`.
+- **`BitwardenClient`** has `_progress()`, `_diagnostic()`, and `_debug()` methods
+  gated on `self.verbose >= 1/2/3`.  Calls are placed in `start_serve()`,
+  `ensure_session()`, `login()`, `unlock()`, `lock()`, and `sync()`.
+- **`Importer`** delegates to `self.client.verbose` and reports scan counts,
+  vault record counts, per-key progress, and comparison diagnostics.
+- **`cli.py`** has a module-level `_progress(msg, verbose, level)` helper and
+  a `_verbose_level(args)` function that normalises `--quiet` → 0, default → 1.
+- **`--verbose`** / `-v` is a count global flag; `--quiet` sets it to 0.
 
 ## Troubleshooting
 

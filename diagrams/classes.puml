@@ -1,0 +1,150 @@
+@startuml classes
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FEFEFE
+
+title Core classes and relationships
+
+namespace ssh_bw {
+
+  class BitwardenClient {
+    + bw_path: str
+    + session: Optional[str]
+    + use_serve: bool
+    + serve_port: int
+    + verbose: int
+    + email: Optional[str]
+    + password: Optional[str]
+    - _serve_proc: Optional[Popen]
+    ..
+    + __init__(bw_path, *, session, use_serve, serve_port, verbose, email, password)
+    + status() -> Dict
+    + is_logged_in() -> bool
+    + login(email, password)
+    + unlock(password, *, email) -> str
+    + ensure_session(email, password) -> str
+    + verify_session() -> bool
+    + lock()
+    + sync()
+    + start_serve(timeout)
+    + stop_serve()
+    + list_items(search) -> List[Dict]
+    + get_template(name) -> Dict
+    + create_item(item) -> Dict
+    + edit_item(item_id, item) -> Dict
+    + delete_item(item_id, *, permanent)
+    + __enter__() -> BitwardenClient
+    + __exit__(*exc)
+    + _run(args, *, input_text, check, with_session, timeout) -> BWResult
+    + _ensure_vault_ready()
+    + _check_bw_binary()
+    + _api(method, path, body) -> Any
+    - _encode(item) -> str
+  }
+
+  class BWResult <<dataclass>> {
+    + ok: bool
+    + stdout: str
+    + stderr: str
+    + code: int
+  }
+
+  class Importer {
+    + client: BitwardenClient
+    + name_prefix: str
+    ..
+    + __init__(client, *, name_prefix)
+    + load_ssh_records() -> List[SSHRecord]
+    + load_pgp_notes() -> List[Dict]
+    + sync_pair(pair, records, template, *, confirm_update) -> SyncResult
+    + sync_directory(ssh_dir, *, confirm_update, derive_missing_public) -> List[SyncResult]
+    + sync_from_server(ssh_dir, *, confirm_overwrite) -> List[SyncResult]
+    + delete_ssh(identifier, *, permanent) -> List[SyncResult]
+    - _find_match(pair, records) -> Optional[SSHRecord]
+    - _item_name(pair) -> str
+    - _build_item(pair, template, item_id) -> Dict
+  }
+
+  class SSHRecord <<dataclass>> {
+    + id: str
+    + name: str
+    + private_key: str
+    + public_key: str
+    + fingerprint: str
+    + raw: Dict
+  }
+
+  class SyncResult <<dataclass>> {
+    + name: str
+    + fingerprint: str
+    + action: str
+    + item_id: Optional[str]
+    + detail: str
+    ..
+    <<constants>>
+    ACTION_CREATED = "created"
+    ACTION_UPDATED = "updated"
+    ACTION_SKIPPED = "skipped"
+    ACTION_UNCHANGED = "unchanged"
+    ACTION_DECLINED = "declined"
+  }
+
+  class SSHKeyPair <<dataclass>> {
+    + name: str
+    + private_path: Path
+    + public_path: Optional[Path]
+    + private_key: str
+    + public_key: str
+    + fingerprint: str
+    + comment: str
+    + encrypted: bool
+    + derived_public: bool
+    ..
+    + normalized_private() -> str
+    + normalized_public() -> str
+    + matches(private_key, public_key) -> bool
+  }
+
+  class Credentials <<dataclass>> {
+    + email: str
+    + password: str
+    ..
+    + is_complete() -> bool
+  }
+
+  class CredentialStore {
+    + config_dir: Path
+    + enc_path: Path
+    + use_keyring: bool
+    ..
+    + __init__(config_dir, *, prefer_keyring)
+    + backend -> str
+    + has_credentials() -> bool
+    + save(creds, *, store_passphrase)
+    + load(*, store_passphrase) -> Credentials
+    + delete() -> bool
+  }
+
+  class BitwardenError extends Exception {
+  }
+
+  class CredentialError extends Exception {
+  }
+
+}
+
+' --- Relationships ---
+
+Importer *-- "1" BitwardenClient : "client"
+Importer --> "uses" SSHKeyPair
+Importer --> "creates" SSHRecord
+Importer --> "returns" SyncResult
+
+BitwardenClient --> "creates" BWResult : "_run() returns"
+
+CredentialStore --> "stores" Credentials
+CredentialStore ..> CredentialError : "raises on failure"
+
+BitwardenError <.. BitwardenClient : "raises"
+CredentialError <.. CredentialStore : "raises"
+
+@enduml

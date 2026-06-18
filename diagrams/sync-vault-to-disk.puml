@@ -1,0 +1,52 @@
+@startuml sync-vault-to-disk
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign direction
+
+title Sync: vault → disk (ssh_bw sync --from-server)
+
+actor User as U
+participant "cli.py\ncmd_sync" as CLI
+participant "BitwardenClient" as BWC
+participant "Importer" as IMP
+collections "Vault\n(bw list)" as VAULT
+database "~/.ssh/" as DISK
+
+== 1. Initialise ==
+U -> CLI : ssh_bw sync --from-server
+CLI -> BWC : ensure_session(email, password)
+BWC -> BWC : verify_session()
+alt session invalid
+  BWC -> BWC : unlock(password)
+end
+CLI -> BWC : sync()
+
+== 2. Fetch vault records ==
+CLI -> IMP : Importer(client)
+CLI -> IMP : sync_from_server(ssh_dir, confirm_overwrite=True)
+IMP -> BWC : list_items()
+BWC -> VAULT : bw list items --search SSH:
+VAULT --> BWC : items
+BWC --> IMP : List[SSHRecord]
+
+== 3. Write to disk ==
+loop for each SSHRecord
+  IMP -> IMP : strip prefix → bare name
+  IMP -> DISK : check if <name> / <name>.pub exist
+  alt neither file exists
+    IMP -> DISK : write priv (0600), write pub
+    IMP --> CLI : SyncResult(CREATED)
+  else files exist & match vault
+    IMP --> CLI : SyncResult(UNCHANGED)
+  else files exist & differ
+    alt confirm_overwrite
+      IMP -> DISK : overwrite priv (0600), write pub
+      IMP --> CLI : SyncResult(UPDATED)
+    else declined
+      IMP --> CLI : SyncResult(DECLINED)
+    end
+  end
+end
+
+CLI --> U : summary table
+
+@enduml

@@ -54,8 +54,8 @@ class BitwardenClient:
         ``bw serve`` REST server (faster for bulk ops).  Auth still uses CLI.
     serve_port:
         Port for ``bw serve`` (default 8087).
-    quiet:
-        Suppress progress messages on stderr.
+    verbose:
+        Verbosity level: 0=quiet, 1=progress, 2=diagnostics, 3=debug.
     """
 
     def __init__(
@@ -65,7 +65,7 @@ class BitwardenClient:
         session: Optional[str] = None,
         use_serve: bool = False,
         serve_port: int = 8087,
-        quiet: bool = False,
+        verbose: int = 1,
         email: Optional[str] = None,
         password: Optional[str] = None,
     ) -> None:
@@ -73,13 +73,21 @@ class BitwardenClient:
         self.session = session
         self.use_serve = use_serve
         self.serve_port = serve_port
-        self.quiet = quiet
+        self.verbose = verbose
         self.email = email
         self.password = password
         self._serve_proc: Optional[subprocess.Popen] = None
 
     def _progress(self, msg: str) -> None:
-        if not self.quiet:
+        if self.verbose >= 1:
+            print(msg, file=sys.stderr, flush=True)
+
+    def _diagnostic(self, msg: str) -> None:
+        if self.verbose >= 2:
+            print(msg, file=sys.stderr, flush=True)
+
+    def _debug(self, msg: str) -> None:
+        if self.verbose >= 3:
             print(msg, file=sys.stderr, flush=True)
 
     # ------------------------------------------------------------------ #
