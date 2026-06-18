@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -57,6 +58,10 @@ class Importer:
         self.client = client
         self.name_prefix = name_prefix
 
+    def _progress(self, msg: str) -> None:
+        if not self.client.quiet:
+            print(msg, file=sys.stderr, flush=True)
+
     # ------------------------------------------------------------------ #
     # Reading from the vault
     # ------------------------------------------------------------------ #
@@ -76,10 +81,13 @@ class Importer:
                     raw=item,
                 )
             )
+        self._progress(f"  loaded {len(records)} SSH key record(s) from vault")
         return records
 
     def load_pgp_notes(self) -> List[Dict[str, Any]]:
-        return [item for item in self.client.list_items() if is_pgp_note(item)]
+        notes = [item for item in self.client.list_items() if is_pgp_note(item)]
+        self._progress(f"  found {len(notes)} PGP note(s) in vault")
+        return notes
 
     # ------------------------------------------------------------------ #
     # Matching
@@ -186,10 +194,12 @@ class Importer:
         derive_missing_public: bool = True,
     ) -> List[SyncResult]:
         pairs = scan_ssh_dir(ssh_dir, derive_missing_public=derive_missing_public)
+        self._progress(f"  found {len(pairs)} key pair(s) on disk")
         records = self.load_ssh_records()
         template = self.client.get_template("item")
         results: List[SyncResult] = []
-        for pair in pairs:
+        for i, pair in enumerate(pairs, 1):
+            self._progress(f"  [{i}/{len(pairs)}] processing {pair.name} …")
             results.append(
                 self.sync_pair(pair, records, template, confirm_update=confirm_update)
             )
@@ -220,8 +230,10 @@ class Importer:
             if identifier in (r.id, r.name, r.fingerprint)
             or identifier == r.name.replace(self.name_prefix, "")
         ]
+        self._progress(f"  found {len(targets)} item(s) to delete")
         results: List[SyncResult] = []
         for rec in targets:
+            self._progress(f"  deleting {rec.name} …")
             self.client.delete_item(rec.id, permanent=permanent)
             results.append(
                 SyncResult(

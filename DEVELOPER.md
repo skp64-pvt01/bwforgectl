@@ -226,6 +226,51 @@ pip install dist/ssh_bw-1.0.0-py3-none-any.whl
 - Error handling: custom exception hierarchy rooted in `BitwardenError`
   and `CredentialError`
 
+## Progress reporting
+
+All progress/status messages are printed to **stderr** so they never interfere
+with `--json` output or piped stdout.  The `--quiet` global flag suppresses
+them entirely.
+
+Output examples:
+
+```
+$ ssh-bw sync --update
+  logging in to Bitwarden …
+  logged in
+  scanning /home/user/.ssh …
+  found 3 key pair(s) on disk
+  loaded 2 SSH key record(s) from vault
+  [1/3] processing id_ed25519 …
+[unchanged] SSH: id_ed25519  (identical to vault entry)
+  [2/3] processing id_rsa …
+[created  ] SSH: id_rsa  (created new SSH key item)
+  [3/3] processing id_ecdsa …
+  Key 'id_ecdsa' differs from vault entry.
+  Update the vault entry? [y/N]
+```
+
+```
+$ ssh-bw --use-serve sync
+  starting bw serve on 127.0.0.1:8087 …
+  … waiting for bw serve (3s)
+  … waiting for bw serve (7s)
+  bw serve ready (8.2s)
+```
+
+How it works:
+
+- **`BitwardenClient`** has a `_progress(msg)` method and a `quiet` field.
+  Calls are placed in `start_serve()` (shows wait time dots), `ensure_session()`,
+  `login()`, `unlock()`, `lock()`, and `sync()`.
+- **`Importer`** delegates to `self.client.quiet` and reports scan counts,
+  vault record counts, and per-key progress (`[N/M] processing …`).
+- **`cli.py`** has a module-level `_progress(msg, quiet)` helper and adds
+  progress in every command function (e.g. "scanning …", "loading items from
+  vault …", "exporting N items …").
+- **`--quiet`** is a global parser flag.  It is passed through to
+  `BitwardenClient(quiet=True)` and surfaces everywhere via `client.quiet`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -233,5 +278,7 @@ pip install dist/ssh_bw-1.0.0-py3-none-any.whl
 | `error: Not logged in and no email provided.` | No `--email`, no `BW_EMAIL`, and no stored credentials. |
 | `error: Could not decrypt stored credentials` | Wrong `--store-passphrase` for encrypted-file backend. |
 | `bw serve did not start in time.` | `bw serve` not available or port already in use. |
+| `bw serve exited unexpectedly` | The `bw` binary is missing or broken. Check `bw --version`. |
 | `BrokenPipeError` | Pipelines from Python to another tool (e.g., `grep`); Python handles this with default SIGPIPE. |
 | Package build fails with `python3 not found` | System `python3` is not on `PATH`. Check `debian/rules`. |
+| Progress output is unwanted in scripts | Pass `--quiet` to suppress all stderr progress messages. |

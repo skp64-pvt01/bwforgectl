@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -53,6 +54,8 @@ class BitwardenClient:
         ``bw serve`` REST server (faster for bulk ops).  Auth still uses CLI.
     serve_port:
         Port for ``bw serve`` (default 8087).
+    quiet:
+        Suppress progress messages on stderr.
     """
 
     def __init__(
@@ -62,12 +65,18 @@ class BitwardenClient:
         session: Optional[str] = None,
         use_serve: bool = False,
         serve_port: int = 8087,
+        quiet: bool = False,
     ) -> None:
         self.bw_path = bw_path
         self.session = session
         self.use_serve = use_serve
         self.serve_port = serve_port
+        self.quiet = quiet
         self._serve_proc: Optional[subprocess.Popen] = None
+
+    def _progress(self, msg: str) -> None:
+        if not self.quiet:
+            print(msg, file=sys.stderr, flush=True)
 
     # ------------------------------------------------------------------ #
     # Low-level CLI helpers
@@ -119,6 +128,7 @@ class BitwardenClient:
         return self.status().get("status") in {"locked", "unlocked"}
 
     def login(self, email: str, password: str) -> None:
+        self._progress("  logging in to Bitwarden …")
         res = self._run(
             ["login", email, password, "--raw"],
             with_session=False,
@@ -127,23 +137,28 @@ class BitwardenClient:
         if not res.ok:
             # Already authenticated is not fatal.
             if "already logged in" in (res.stderr + res.stdout).lower():
+                self._progress("  already logged in")
                 return
             raise BitwardenError(f"Login failed: {res.stderr or res.stdout}")
         if res.stdout:
             self.session = res.stdout
+        self._progress("  logged in")
 
     def unlock(self, password: str) -> str:
         """Unlock the vault and store the session key. Returns the session key."""
+        self._progress("  unlocking vault …")
         res = self._run(["unlock", password, "--raw"], with_session=False, check=False)
         if not res.ok or not res.stdout:
             raise BitwardenError(f"Unlock failed: {res.stderr or res.stdout}")
         self.session = res.stdout
+        self._progress("  vault unlocked")
         return self.session
 
     def ensure_session(self, email: Optional[str], password: str) -> str:
         """Make sure we have a usable session, logging in if necessary."""
         st = self.status().get("status")
         if st == "unlocked" and self.session:
+            self._progress("  session already active")
             return self.session
         if st == "unauthenticated":
             if not email:
@@ -155,36 +170,60 @@ class BitwardenClient:
         return self.unlock(password)
 
     def lock(self) -> None:
+        self._progress("  locking vault …")
         self._run(["lock"], with_session=False, check=False)
         self.session = None
+        self._progress("  vault locked")
 
     def sync(self) -> None:
+        self._progress("  syncing vault with server …")
         self._run(["sync"])
+        self._progress("  sync complete")
 
     # ------------------------------------------------------------------ #
     # bw serve (REST) lifecycle
     # ------------------------------------------------------------------ #
-    def start_serve(self, timeout: float = 15.0) -> None:
+    def start_serve(self, timeout: float = 30.0) -> None:
         if self._serve_proc is not None:
+            self._progress("  bw serve already running")
             return
         env = dict(os.environ)
         if self.session:
             env["BW_SESSION"] = self.session
-        self._serve_proc = subprocess.Popen(
+        self._progress(f"  starting bw serve on 127.0.0.1:{self.serve_port} …")
+        proc = subprocess.Popen(
             [self.bw_path, "serve", "--port", str(self.serve_port)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
         )
-        deadline = time.time() + timeout
+        self._serve_proc = proc
+        start = time.time()
+        deadline = start + timeout
+        last_print = 0.0
         while time.time() < deadline:
+            if proc.poll() is not None:
+                self._serve_proc = None
+                raise BitwardenError(
+                    f"bw serve exited unexpectedly (exit {proc.returncode}). "
+                    f"Check that 'bw' is installed and functional."
+                )
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(0.5)
                 if s.connect_ex(("127.0.0.1", self.serve_port)) == 0:
+                    self._progress(f"  bw serve ready ({time.time() - start:.1f}s)")
                     return
+            elapsed = time.time() - start
+            now = time.time()
+            if now - last_print >= 2.0:
+                self._progress(f"  … waiting for bw serve ({elapsed:.0f}s)")
+                last_print = now
             time.sleep(0.3)
         self.stop_serve()
-        raise BitwardenError("bw serve did not start in time.")
+        raise BitwardenError(
+            f"bw serve did not start within {timeout:.0f}s. "
+            f"Check that 'bw' is installed (e.g. snap install bw)."
+        )
 
     def stop_serve(self) -> None:
         if self._serve_proc is not None:

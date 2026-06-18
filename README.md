@@ -49,6 +49,7 @@ ssh-bw [global-opts] <command> [auth-opts] [command-opts]
 | `--use-serve` | off | Use `bw serve` REST API (faster for bulk ops). |
 | `--serve-port PORT` | `8087` | Port for `bw serve`. |
 | `--no-sync` | off | Skip `bw sync` before vault operations. |
+| `--quiet` | off | Suppress progress messages on stderr. |
 
 ### Auth / credential options
 

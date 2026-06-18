@@ -36,6 +36,11 @@ from .pgp import is_pgp_note
 from .sshscan import SSHKeyPair
 
 
+def _progress(msg: str, quiet: bool = False) -> None:
+    if not quiet:
+        print(msg, file=sys.stderr, flush=True)
+
+
 # --------------------------------------------------------------------------- #
 # Credential resolution
 # --------------------------------------------------------------------------- #
@@ -66,11 +71,13 @@ def _resolve_credentials(args: argparse.Namespace) -> Credentials:
 
 
 def _make_client(args: argparse.Namespace, *, need_auth: bool = True) -> BitwardenClient:
+    quiet = getattr(args, "quiet", False)
     client = BitwardenClient(
         bw_path=args.bw_path,
         session=args.session or os.environ.get("BW_SESSION"),
         use_serve=args.use_serve,
         serve_port=args.serve_port,
+        quiet=quiet,
     )
     if need_auth and not client.session:
         creds = _resolve_credentials(args)
@@ -116,11 +123,15 @@ def _confirm_update_interactive(pair: SSHKeyPair, record) -> bool:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
+    quiet = getattr(args, "quiet", False)
     client = _make_client(args)
     try:
         if not args.no_sync:
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
+
+        ssh_dir = args.ssh_dir or os.path.expanduser("~/.ssh")
+        _progress(f"  scanning {ssh_dir} …", quiet)
 
         if args.update and args.yes:
             confirm = lambda p, r: True  # noqa: E731
@@ -152,11 +163,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    quiet = getattr(args, "quiet", False)
     client = _make_client(args)
     try:
         if not args.no_sync:
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
+        _progress("  loading items from vault …", quiet)
         ssh_records = importer.load_ssh_records() if args.type in ("ssh", "all") else []
         pgp_notes = importer.load_pgp_notes() if args.type in ("pgp", "all") else []
     finally:
@@ -185,6 +198,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_output(args: argparse.Namespace) -> int:
+    quiet = getattr(args, "quiet", False)
     client = _make_client(args)
     try:
         if not args.no_sync:
@@ -194,6 +208,7 @@ def cmd_output(args: argparse.Namespace) -> int:
         if out_dir:
             out_dir.mkdir(parents=True, exist_ok=True)
 
+        _progress(f"  exporting {args.type} items …", quiet)
         if args.type == "ssh":
             count = _output_ssh(importer, args, out_dir)
         else:
@@ -203,6 +218,7 @@ def cmd_output(args: argparse.Namespace) -> int:
     if count == 0:
         print("No matching items found.", file=sys.stderr)
         return 1
+    _progress(f"  exported {count} item(s)", quiet)
     return 0
 
 
@@ -251,6 +267,7 @@ def _output_pgp(importer: Importer, args: argparse.Namespace, out_dir) -> int:
 
 
 def cmd_delete(args: argparse.Namespace) -> int:
+    quiet = getattr(args, "quiet", False)
     identifier = args.id or args.name
     if not identifier:
         print("error: provide --id or --name", file=sys.stderr)
@@ -260,6 +277,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
         if not args.no_sync:
             client.sync()
         importer = Importer(client, name_prefix=args.name_prefix)
+        _progress("  locating matching items …", quiet)
         # Resolve targets first for confirmation.
         records = importer.load_ssh_records()
         targets = [
@@ -277,6 +295,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
             if input("Proceed? [y/N] ").strip().lower() not in {"y", "yes"}:
                 print("Aborted.")
                 return 0
+        _progress(f"  deleting {len(targets)} item(s) …", quiet)
         results = importer.delete_ssh(identifier, permanent=args.permanent)
     finally:
         client.stop_serve()
@@ -324,6 +343,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serve-port", type=int, default=8087, help="bw serve port.")
     parser.add_argument("--no-sync", action="store_true",
                         help="Skip 'bw sync' before operating.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress progress messages on stderr.")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
