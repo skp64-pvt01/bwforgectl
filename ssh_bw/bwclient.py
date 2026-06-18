@@ -66,12 +66,16 @@ class BitwardenClient:
         use_serve: bool = False,
         serve_port: int = 8087,
         quiet: bool = False,
+        email: Optional[str] = None,
+        password: Optional[str] = None,
     ) -> None:
         self.bw_path = bw_path
         self.session = session
         self.use_serve = use_serve
         self.serve_port = serve_port
         self.quiet = quiet
+        self.email = email
+        self.password = password
         self._serve_proc: Optional[subprocess.Popen] = None
 
     def _progress(self, msg: str) -> None:
@@ -88,6 +92,7 @@ class BitwardenClient:
         input_text: Optional[str] = None,
         check: bool = True,
         with_session: bool = True,
+        timeout: float = 30.0,
     ) -> BWResult:
         cmd = [self.bw_path] + args
         if with_session and self.session:
@@ -95,23 +100,45 @@ class BitwardenClient:
         env = dict(os.environ)
         if self.session:
             env["BW_SESSION"] = self.session
-        proc = subprocess.run(
-            cmd,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=input_text if input_text is not None else "",
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            msg = (
+                f"`bw {' '.join(args)}` timed out after {timeout:.0f}s.\n"
+                f"  The Bitwarden CLI may be stuck — check that your vault session is valid\n"
+                f"  and that 'bw' is the correct executable ({self.bw_path})."
+            )
+            raise BitwardenError(msg)
         result = BWResult(
             ok=proc.returncode == 0,
             stdout=proc.stdout.strip(),
             stderr=proc.stderr.strip(),
             code=proc.returncode,
         )
-        if check and not result.ok:
-            raise BitwardenError(
-                f"`bw {' '.join(args)}` failed (exit {result.code}): {result.stderr or result.stdout}"
-            )
+        if not result.ok:
+            detail = (result.stderr or result.stdout).strip()
+            # SIGKILL often means bw was stuck prompting for a password
+            if result.code == -9:
+                detail = (
+                    f"{detail}\n  The process was killed (SIGKILL). "
+                    f"This usually means 'bw' tried to prompt for the master password\n"
+                    f"  because the session key is invalid or missing."
+                )
+            elif result.code == -15:
+                detail = (
+                    f"{detail}\n  The process was terminated (SIGTERM)."
+                )
+            if check:
+                raise BitwardenError(
+                    f"`bw {' '.join(args)}` failed (exit {result.code}): {detail}"
+                )
         return result
 
     # ------------------------------------------------------------------ #
@@ -129,6 +156,8 @@ class BitwardenClient:
 
     def login(self, email: str, password: str) -> None:
         self._progress("  logging in to Bitwarden …")
+        self.email = email
+        self.password = password
         res = self._run(
             ["login", email, password, "--raw"],
             with_session=False,
@@ -144,9 +173,12 @@ class BitwardenClient:
             self.session = res.stdout
         self._progress("  logged in")
 
-    def unlock(self, password: str) -> str:
+    def unlock(self, password: str, *, email: Optional[str] = None) -> str:
         """Unlock the vault and store the session key. Returns the session key."""
         self._progress("  unlocking vault …")
+        if email:
+            self.email = email
+        self.password = password
         res = self._run(["unlock", password, "--raw"], with_session=False, check=False)
         if not res.ok or not res.stdout:
             raise BitwardenError(f"Unlock failed: {res.stderr or res.stdout}")
@@ -156,6 +188,11 @@ class BitwardenClient:
 
     def ensure_session(self, email: Optional[str], password: str) -> str:
         """Make sure we have a usable session, logging in if necessary."""
+        self._check_bw_binary()
+        if email:
+            self.email = email
+        if password:
+            self.password = password
         st = self.status().get("status")
         if st == "unlocked" and self.session:
             self._progress("  session already active")
@@ -168,6 +205,31 @@ class BitwardenClient:
             if self.session:
                 return self.session
         return self.unlock(password)
+
+    def verify_session(self) -> bool:
+        """Check that we have a session key and the vault reports unlocked."""
+        if not self.session:
+            return False
+        st = self.status().get("status")
+        return st == "unlocked"
+
+    def _ensure_vault_ready(self) -> None:
+        """Verify session health before vault operations. Re-authenticate if
+        the session has expired."""
+        if self.use_serve:
+            return
+        if self.verify_session():
+            return
+        self._progress("  vault session expired, re-authenticating …")
+        if self.email and self.password:
+            self.ensure_session(self.email, self.password)
+        else:
+            raise BitwardenError(
+                "Vault session is invalid or has expired.\n"
+                "  Provide a session key (--session / BW_SESSION), email and password\n"
+                "  (--email / --password / BW_EMAIL / BW_PASSWORD), or use --use-stored\n"
+                "  with credentials saved via 'store-credentials'."
+            )
 
     def lock(self) -> None:
         self._progress("  locking vault …")
@@ -253,6 +315,17 @@ class BitwardenClient:
     # ------------------------------------------------------------------ #
     # Vault item operations
     # ------------------------------------------------------------------ #
+    def _check_bw_binary(self) -> None:
+        """Raise a clear error if the bw binary is not found or not executable."""
+        import shutil
+        if not shutil.which(self.bw_path):
+            raise BitwardenError(
+                f"Bitwarden CLI ('{self.bw_path}') not found on PATH.\n"
+                f"  Install it (e.g. 'snap install bw' or download from "
+                f"https://github.com/bitwarden/clients/releases)\n"
+                f"  or set the path via --bw-path."
+            )
+
     def list_items(self, search: Optional[str] = None) -> List[Dict[str, Any]]:
         if self.use_serve:
             path = "/list/object/items"
@@ -260,6 +333,7 @@ class BitwardenClient:
                 path += f"?search={urllib.parse.quote(search)}"
             data = self._api("GET", path)
             return data.get("data", []) if isinstance(data, dict) else (data or [])
+        self._ensure_vault_ready()
         args = ["list", "items"]
         if search:
             args += ["--search", search]
@@ -267,10 +341,12 @@ class BitwardenClient:
         return json.loads(res.stdout) if res.stdout else []
 
     def get_template(self, name: str = "item") -> Dict[str, Any]:
+        self._ensure_vault_ready()
         res = self._run(["get", "template", name])
         return json.loads(res.stdout)
 
     def create_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        self._ensure_vault_ready()
         if self.use_serve:
             return self._api("POST", "/object/item", item)
         encoded = self._encode(item)
@@ -278,6 +354,7 @@ class BitwardenClient:
         return json.loads(res.stdout) if res.stdout else {}
 
     def edit_item(self, item_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
+        self._ensure_vault_ready()
         if self.use_serve:
             return self._api("PUT", f"/object/item/{item_id}", item)
         encoded = self._encode(item)
@@ -285,6 +362,7 @@ class BitwardenClient:
         return json.loads(res.stdout) if res.stdout else {}
 
     def delete_item(self, item_id: str, *, permanent: bool = False) -> None:
+        self._ensure_vault_ready()
         if self.use_serve:
             self._api("DELETE", f"/object/item/{item_id}")
             return

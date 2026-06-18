@@ -72,15 +72,17 @@ def _resolve_credentials(args: argparse.Namespace) -> Credentials:
 
 def _make_client(args: argparse.Namespace, *, need_auth: bool = True) -> BitwardenClient:
     quiet = getattr(args, "quiet", False)
+    creds = _resolve_credentials(args) if need_auth else None
     client = BitwardenClient(
         bw_path=args.bw_path,
         session=args.session or os.environ.get("BW_SESSION"),
         use_serve=args.use_serve,
         serve_port=args.serve_port,
         quiet=quiet,
+        email=creds.email if creds else None,
+        password=creds.password if creds else None,
     )
     if need_auth and not client.session:
-        creds = _resolve_credentials(args)
         client.ensure_session(creds.email, creds.password)
     if args.use_serve:
         client.start_serve()

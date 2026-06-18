@@ -90,6 +90,25 @@ Session keys are passed via `--session` flag and `BW_SESSION` env var.
 uses the CLI path. Mode is transparent to callers — `list_items`, `create_item`,
 `edit_item`, and `delete_item` dispatch to the right path automatically.
 
+### Session health
+
+The Bitwarden CLI sometimes invalidates sessions or prompts for the master
+password when the session key is missing/stale.  `ssh-bw` handles this with
+three mechanisms:
+
+1. **`verify_session()`** — runs `bw status` and checks that the vault reports
+   `"unlocked"` and that the client holds a non-`None` session key.
+2. **`_ensure_vault_ready()`** — called at the top of every vault operation
+   (`list_items`, `create_item`, `edit_item`, `delete_item`, `get_template`).
+   If the session is invalid it attempts a silent re-authentication using the
+   stored `email`/`password` fields.  If no credentials are available it raises
+   a clear error pointing the user at `--session`, `--email`, or `--use-stored`.
+3. **`_run()` timeout + empty stdin** — every `bw` subprocess call has a
+   30-second timeout and an empty stdin sentinel (`input=""`).  If `bw` ever
+   tries to prompt for a password interactively, the empty input causes it to
+   fail quickly instead of hanging indefinitely.  A SIGKILL (exit -9) is
+   detected and flagged in the error message.
+
 ### `credentials.py` — Secure credential storage
 
 Two backends, auto-selected:
@@ -222,7 +241,11 @@ pip install dist/ssh_bw-1.0.0-py3-none-any.whl
 - `Optional[X]` rather than `X | None` for Python 3.9 compatibility
 - `_normalize()` strips trailing whitespace and blank lines for safe key
   comparison
-- All subprocess calls use `subprocess.run()` (no `shell=True`)
+- All subprocess calls use `subprocess.run()` (no `shell=True`) with a 30-second
+  timeout and empty stdin sentinel to prevent hangs when `bw` prompts
+  interactively.
+- Exit code -9 (SIGKILL) from `bw` is detected in `_run()` and flagged with a
+  diagnostic message about missing/invalid session keys.
 - Error handling: custom exception hierarchy rooted in `BitwardenError`
   and `CredentialError`
 
@@ -279,6 +302,10 @@ How it works:
 | `error: Could not decrypt stored credentials` | Wrong `--store-passphrase` for encrypted-file backend. |
 | `bw serve did not start in time.` | `bw serve` not available or port already in use. |
 | `bw serve exited unexpectedly` | The `bw` binary is missing or broken. Check `bw --version`. |
+| `bw list items failed (exit -9)` | `bw` was killed (SIGKILL) — usually because it tried to prompt for the master password. The session key is invalid or missing; `ssh-bw` now detects this and re-authenticates automatically. |
+| `bw list items timed out` | `bw` likely tried to wait for interactive password input. `ssh-bw` now sends empty stdin and enforces a 30s timeout so this fails fast. |
+| `Vault session is invalid or has expired` | The `--session` key or `BW_SESSION` env var is stale, and no credentials were provided for re-auth. Use `--email`/`--password` or `--use-stored`. |
+| `Bitwarden CLI ('bw') not found` | The `bw` binary is not installed or not on PATH. Install it (`snap install bw`) or set `--bw-path`. |
 | `BrokenPipeError` | Pipelines from Python to another tool (e.g., `grep`); Python handles this with default SIGPIPE. |
 | Package build fails with `python3 not found` | System `python3` is not on `PATH`. Check `debian/rules`. |
 | Progress output is unwanted in scripts | Pass `--quiet` to suppress all stderr progress messages. |
