@@ -1,7 +1,7 @@
 
 # SSH Setup for use with multiple git repos
 
-To manage multiple Git repositories using independent SSH keys, you must configure the **`~/.ssh/config` file** (not `~/.ssh/hosts`, which is not a standard OpenSSH file).
+To manage multiple Git repositories using independent SSH keys, you must configure the **`~/.ssh/config` file**.
 
 Here is the complete step-by-step process to generate unique keys, build your SSH configuration block, and match your Git repositories to the correct identity.
 
