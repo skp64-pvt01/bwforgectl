@@ -1,0 +1,22 @@
+Source: ssh-bw
+Section: utils
+Priority: optional
+Maintainer: pilakkat1964 <pilakkat1964@gmail.com>
+Build-Depends: debhelper-compat (= 13), dh-python,
+               python3-all, python3-setuptools, python3-cryptography
+Standards-Version: 4.6.2
+Homepage: https://github.com/pilakkat1964/ssh-bw
+Rules-Requires-Root: no
+
+Package: ssh-bw
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends},
+         python3-cryptography,
+         openssh-client
+Suggests: bitwarden-cli
+Description: Sync local SSH key pairs with a Bitwarden vault
+  Scans ~/.ssh for SSH key pairs and synchronises them with a
+  Bitwarden vault. Supports importing new keys, updating existing
+  entries, listing/outputting SSH and PGP items, and deleting
+  records. Credentials can be persisted via the OS keyring or an
+  encrypted file (PBKDF2 + Fernet).

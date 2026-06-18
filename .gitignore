@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.pybuild/
+
+# Debian packaging
+debian/.debhelper/
+debian/*.substvars
+debian/*.debhelper
+debian/files
+debian/ssh-bw/
+debian/tmp/
+debian/debhelper-build-stamp
+
+# Credential store (user-specific)
+.config/ssh-bw/
+
+# Editor / OS
+*~
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp vault state
+fake_vault.json
+/tmp/
+
+# Test export dirs
+/tmp/ssh-bw-export/

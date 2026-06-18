@@ -1,0 +1,8 @@
+ssh-bw (1.0.0-1) noble; urgency=medium
+
+  * Initial release.
+  * Sync local SSH key pairs with a Bitwarden vault.
+  * Supports import, update, skip, delete, list, and output operations.
+  * Secure credential storage via OS keyring or encrypted file (PBKDF2 + Fernet).
+
+ -- pilakkat1964 <pilakkat1964@gmail.com>  Thu, 18 Jun 2026 00:00:00 +0000

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Shell wrapper so `bw_path="..."` can be a single exe.
+exec python3 "$(dirname "$0")/fake_bw.py" "$@"

@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+export PYBUILD_NAME=ssh-bw
+# Use system Python (not pyenv shim) so setuptools is available.
+export PATH := /usr/bin:$(PATH)
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf *.egg-info .pytest_cache
+
+override_dh_clean:
+	dh_clean
+	rm -rf *.egg-info
