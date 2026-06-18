@@ -250,6 +250,75 @@ python -m build
 pip install dist/ssh_bw-1.0.0-py3-none-any.whl
 ```
 
+## Release workflow
+
+### Prerequisites
+
+Install `devscripts` (for `dch`) on your workstation:
+
+```bash
+sudo apt install devscripts
+```
+
+Configure `DEBFULLNAME` and `DEBEMAIL` environment variables (or rely on
+`git config user.name` / `user.email`):
+
+```bash
+export DEBFULLNAME="Your Name"
+export DEBEMAIL="you@example.com"
+```
+
+### Release script
+
+The [`scripts/release.sh`](scripts/release.sh) script automates the full release
+process. It:
+
+1. **Checks** that the working tree is clean.
+2. **Bumps the version** in `ssh_bw/__init__.py`, `pyproject.toml`, `setup.py`,
+   and `debian/changelog`.
+3. **Commits** the version bump.
+4. **Creates an annotated tag** `v<version>`.
+5. **Pushes** both the commit and the tag to the remote (after confirmation).
+
+```bash
+# Interactive mode — prompts for the new version
+./scripts/release.sh
+
+# Or specify the version directly
+./scripts/release.sh 1.1.0
+```
+
+After pushing the tag, the **GitHub Actions workflow**
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) takes over:
+
+| Step | What happens |
+|------|-------------|
+| **Trigger** | Push of an annotated tag matching `v*` |
+| **Build** | `dpkg-buildpackage -b -us -uc` on `ubuntu-24.04` (and future LTS runners) |
+| **Artifact** | The resulting `.deb` is attached to the GitHub Release |
+| **Release notes** | Auto-generated from commit messages since the last tag |
+
+### Manual build (without CI)
+
+```bash
+dpkg-buildpackage -b -uc -us
+```
+
+Build output is `../ssh-bw_<version>-1_all.deb`.
+
+### Adding a new Ubuntu release
+
+1. Add a new entry to the `matrix.include` list in
+   [`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+   ```yaml
+   - distro: ubuntu-26.04
+     runner: ubuntu-26.04
+   ```
+
+2. Update the `Distribution` field in `debian/changelog` if needed (the
+   `DEB_DISTRIBUTION` env var in `release.sh` defaults to `noble`).
+
 ## Code conventions
 
 - Python 3.10+ with `from __future__ import annotations`

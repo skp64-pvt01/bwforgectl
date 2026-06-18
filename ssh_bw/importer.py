@@ -180,12 +180,20 @@ class Importer:
         template: Dict[str, Any],
         *,
         confirm_update: ConfirmFn = _always_no,
+        dry_run: bool = False,
     ) -> SyncResult:
         match = self._find_match(pair, records)
         if match is None:
             self._diagnostic(
                 f"    new key — no matching vault entry found for '{pair.name}'"
             )
+            if dry_run:
+                return SyncResult(
+                    name=self._item_name(pair),
+                    fingerprint=pair.fingerprint,
+                    action=ACTION_SKIPPED,
+                    detail="new key; would be created (dry run)",
+                )
             item = self._build_item(pair, template)
             created = self.client.create_item(item)
             return SyncResult(
@@ -213,12 +221,15 @@ class Importer:
         )
 
         if not confirm_update(pair, match):
+            detail = "differs from vault entry; update declined"
+            if dry_run:
+                detail += " (dry run)"
             return SyncResult(
                 name=match.name,
                 fingerprint=pair.fingerprint,
                 action=ACTION_DECLINED,
                 item_id=match.id,
-                detail="differs from vault entry; update declined",
+                detail=detail,
             )
 
         item = self._build_item(pair, template, item_id=match.id)
@@ -237,9 +248,15 @@ class Importer:
         *,
         confirm_update: ConfirmFn = _always_no,
         derive_missing_public: bool = True,
+        dry_run: bool = False,
     ) -> List[SyncResult]:
         pairs = scan_ssh_dir(ssh_dir, derive_missing_public=derive_missing_public)
         self._progress(f"  found {len(pairs)} key pair(s) on disk")
+        if dry_run:
+            self._progress(
+                "  dry-run mode — no changes written. Use --yes (auto) or"
+                " --update (interactive) to apply."
+            )
         records = self.load_ssh_records()
         template = self.client.get_template("item")
         results: List[SyncResult] = []
@@ -249,7 +266,11 @@ class Importer:
                 f"    local fp: {pair.fingerprint or '?'}  encrypted: {pair.encrypted}"
             )
             results.append(
-                self.sync_pair(pair, records, template, confirm_update=confirm_update)
+                self.sync_pair(
+                    pair, records, template,
+                    confirm_update=confirm_update,
+                    dry_run=dry_run,
+                )
             )
             # Refresh local view so a freshly created item is matched next time.
             if results[-1].action == ACTION_CREATED and results[-1].item_id:
@@ -269,13 +290,19 @@ class Importer:
         ssh_dir: Optional[str] = None,
         *,
         confirm_overwrite: bool = False,
+        dry_run: bool = False,
     ) -> List[SyncResult]:
         """Pull SSH keys from the vault and write them to *ssh_dir*.
 
         Returns a list of SyncResult describing what was done.
         """
         directory = Path(ssh_dir).expanduser() if ssh_dir else Path.home() / ".ssh"
-        self._progress(f"  writing keys to {directory} …")
+        self._progress(f"  comparing vault keys against {directory} …")
+        if dry_run:
+            self._progress(
+                "  dry-run mode — no files written. Use --yes (auto) or"
+                " --update (interactive) to apply."
+            )
         records = self.load_ssh_records()
         if not records:
             self._progress("  no SSH records in vault")
@@ -308,6 +335,15 @@ class Importer:
             if not priv_exists and not pub_exists:
                 # New key from vault
                 self._diagnostic(f"    new key — not present on disk")
+                if dry_run:
+                    results.append(SyncResult(
+                        name=bare,
+                        fingerprint=rec.fingerprint,
+                        action=ACTION_SKIPPED,
+                        item_id=rec.id,
+                        detail="new key; would be written from vault (dry run)",
+                    ))
+                    continue
                 priv_path.parent.mkdir(parents=True, exist_ok=True)
                 priv_path.write_text(rec.private_key)
                 os.chmod(priv_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
@@ -342,13 +378,16 @@ class Importer:
             diffs = ", ".join(diff_fields)
             self._diagnostic(f"    {diffs} differ from vault copy")
 
-            if not confirm_overwrite:
+            if not confirm_overwrite or dry_run:
+                detail = f"differs from local key; overwrite declined"
+                if dry_run:
+                    detail += " (dry run)"
                 results.append(SyncResult(
                     name=bare,
                     fingerprint=rec.fingerprint,
                     action=ACTION_DECLINED,
                     item_id=rec.id,
-                    detail=f"differs from local key; overwrite declined",
+                    detail=detail,
                 ))
                 continue
 

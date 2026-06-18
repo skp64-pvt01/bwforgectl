@@ -179,29 +179,32 @@ def cmd_sync(args: argparse.Namespace) -> int:
         importer = Importer(client, name_prefix=args.name_prefix)
 
         from_server = getattr(args, "from_server", False)
+        explicit = args.update or args.yes
+        dry_run = not explicit
 
         if from_server:
             _progress(f"  pulling keys from vault …", verbose)
-            confirm_overwrite = args.yes
             results = importer.sync_from_server(
                 args.ssh_dir,
-                confirm_overwrite=confirm_overwrite,
+                confirm_overwrite=args.yes,
+                dry_run=dry_run,
             )
         else:
             ssh_dir = args.ssh_dir or os.path.expanduser("~/.ssh")
             _progress(f"  scanning {ssh_dir} …", verbose)
 
-            if args.update and args.yes:
-                confirm = lambda p, r: True  # noqa: E731
-            elif args.update:
-                confirm = _confirm_update_interactive
-            else:
+            if dry_run:
                 confirm = lambda p, r: False  # noqa: E731
+            elif args.yes:
+                confirm = lambda p, r: True  # noqa: E731
+            else:
+                confirm = _confirm_update_interactive
 
             results = importer.sync_directory(
                 args.ssh_dir,
                 confirm_update=confirm,
                 derive_missing_public=not args.no_derive,
+                dry_run=dry_run,
             )
     finally:
         client.stop_serve()
@@ -413,8 +416,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  ssh-bw store-credentials --email you@example.com\n"
             "    Save your credentials for later use (OS keyring or encrypted file).\n\n"
+            "  ssh-bw sync\n"
+            "    Compare local keys with the vault (dry run; no changes made).\n\n"
             "  ssh-bw sync --update\n"
-            "    Scan ~/.ssh and push new/changed keys into the vault.\n\n"
+            "    Interactive: prompt before updating the vault for changed keys.\n\n"
+            "  ssh-bw sync --yes\n"
+            "    Auto-upload all new/changed local keys to the vault.\n\n"
             "  ssh-bw sync --from-server --yes\n"
             "    Pull all vault SSH keys onto local disk (overwriting existing).\n\n"
             "  ssh-bw list --type ssh\n"
@@ -461,7 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_forget_credentials)
 
     p = sub.add_parser("sync",
-                        help="Synchronise SSH key pairs between ~/.ssh and the Bitwarden vault.")
+                        help="Compare SSH key pairs between ~/.ssh and the Bitwarden vault. "
+                             "Without --update or --yes, only reports differences (dry run).")
     _add_auth_args(p)
     _add_common_opts(p)
     p.add_argument("--ssh-dir",
@@ -472,10 +480,11 @@ def build_parser() -> argparse.ArgumentParser:
     direction.add_argument("--from-server", action="store_true", dest="from_server",
                            help="Pull SSH keys from the vault onto local disk.")
     p.add_argument("--update", action="store_true",
-                   help="When a local key differs from its vault entry, prompt to update the vault.")
+                   help="When a local key differs from its vault entry, prompt interactively "
+                        "before updating the vault.")
     p.add_argument("--yes", action="store_true",
-                   help="Non-interactive mode: auto-confirm updates (--update) "
-                        "or overwrites (--from-server).")
+                   help="Non-interactive mode: auto-confirm all changes "
+                        "(updates for --from-disk, overwrites for --from-server).")
     p.add_argument("--no-derive", action="store_true",
                    help="Skip deriving the public key from the private key when only "
                         "a private key is found.")

@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Release workflow for ssh-bw
+#
+# Triggered by an annotated tag matching "v*" (created via
+# scripts/release.sh).  Builds .deb packages for each Ubuntu LTS release
+# listed in the matrix and attaches them as release assets.
+# ---------------------------------------------------------------------------
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build .deb for ${{ matrix.distro }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu-24.04
+            runner: ubuntu-24.04
+          # Add future LTS releases here, e.g.:
+          # - distro: ubuntu-26.04
+          #   runner: ubuntu-26.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            debhelper-compat \
+            dh-python \
+            python3-all \
+            python3-setuptools \
+            python3-cryptography \
+            openssh-client \
+            lintian
+
+      - name: Build source package
+        run: |
+          dpkg-buildpackage -us -uc --build=source
+
+      - name: Build binary package
+        run: |
+          dpkg-buildpackage -b -us -uc
+
+      - name: Rename artifact
+        run: |
+          mv ../ssh-bw_*.deb ../ssh-bw_${{ matrix.distro }}_amd64.deb
+
+      - name: Upload .deb as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ../ssh-bw_*.deb
+          fail_on_unmatched_files: false
+          generate_release_notes: true
