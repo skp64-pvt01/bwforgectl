@@ -6,7 +6,7 @@
 #   scripts/dev.sh [command]
 #
 # Commands:
-#   setup        Create virtual env and install build/test dependencies
+#   setup        Install system build deps, create venv, install Python deps
 #   test         Run pytest (uses venv if available, otherwise system)
 #   build        Build pip package (wheel + sdist) into dist/
 #   deb          Build .deb package via dpkg-buildpackage (output in parent)
@@ -40,6 +40,35 @@ VENV_PATH="${VENV_PATH:-.venv}"
 UV="${UV:-"$(command -v uv 2>/dev/null || true)"}"
 
 # ---- helpers ----------------------------------------------------------------
+DEB_BUILD_DEPS=(
+    debhelper
+    devscripts
+    dh-python
+    python3-all
+    python3-setuptools
+    python3-cryptography
+)
+
+_check_sysdeps() {
+    local missing=()
+    for pkg in "${DEB_BUILD_DEPS[@]}"; do
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
+            missing+=("$pkg")
+        fi
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        printf '%s\n' "${missing[@]}"
+    fi
+}
+
+_install_sysdeps() {
+    local missing=("$@")
+    blue "→ Missing system packages: ${missing[*]}"
+    blue "  Installing with sudo apt install …"
+    sudo apt install -y "${missing[@]}"
+    green "✓ System packages installed"
+}
+
 venv_python() {
     local py="$VENV_PATH/bin/python3"
     if [ ! -x "$py" ]; then
@@ -60,6 +89,26 @@ ensure_venv_msg() {
 # Commands
 # ---------------------------------------------------------------------------
 cmd_setup() {
+    # ---- system-level build dependencies ------------------------------------
+    local missing
+    missing=$(_check_sysdeps)
+    if [ -n "$missing" ]; then
+        IFS=$'\n' read -ra missing_arr <<< "$missing"
+        blue "→ The following system packages are needed for .deb packaging:"
+        for pkg in "${missing_arr[@]}"; do
+            blue "    - $pkg"
+        done
+        read -r -p "  Install with sudo? [y/N] " confirm
+        if [[ $confirm =~ ^[yY] ]]; then
+            _install_sysdeps "${missing_arr[@]}"
+        else
+            blue "  Skipping system packages. 'scripts/dev.sh deb' will fail until they are installed."
+        fi
+    else
+        blue "→ All system build dependencies satisfied"
+    fi
+
+    # ---- Python virtual environment -----------------------------------------
     if [ -f "$VENV_PATH/bin/python3" ] || [ -f "$VENV_PATH/bin/python" ]; then
         blue "→ Virtual environment already exists at $VENV_PATH"
     else
@@ -80,7 +129,7 @@ cmd_setup() {
         exit 1
     fi
 
-    blue "→ Installing build/test dependencies …"
+    blue "→ Installing Python build/test dependencies …"
     if [ -n "$UV" ]; then
         "$UV" pip install --python "$py" build pytest setuptools 2>&1 | tail -3
     else
@@ -126,12 +175,15 @@ cmd_build() {
 
 cmd_deb() {
     blue "→ Building .deb package …"
-    if ! command -v dpkg-buildpackage &>/dev/null; then
-        red "dpkg-buildpackage not found. Install it with:  sudo apt install devscripts"
-        exit 1
-    fi
-    if ! command -v dch &>/dev/null; then
-        red "dch (devscripts) is required.  Install it with:  sudo apt install devscripts"
+    local missing
+    missing=$(_check_sysdeps)
+    if [ -n "$missing" ]; then
+        red "Missing build dependencies:"
+        IFS=$'\n' read -ra missing_arr <<< "$missing"
+        for pkg in "${missing_arr[@]}"; do
+            red "    - $pkg"
+        done
+        blue "  Run 'scripts/dev.sh setup' to install them."
         exit 1
     fi
     if [ ! -s debian/changelog ]; then
