@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -150,6 +151,31 @@ def _derive_public_from_private(private_path: Path) -> str:
             check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+    return out.stdout.strip()
+
+
+def _derive_public_from_private_text(private_key: str, passphrase: str = "") -> str:
+    """Derive the public key from private key content.
+
+    Writes the key to a temp file and runs ``ssh-keygen -y`` on it, which is
+    more reliable than piping via stdin.  *passphrase* defaults to empty
+    (unencrypted key); pass the actual passphrase for encrypted keys.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".tmpkey", delete=False) as tmp:
+            tmp.write(private_key)
+            tmp_path = tmp.name
+        try:
+            out = subprocess.run(
+                ["ssh-keygen", "-y", "-P", passphrase, "-f", tmp_path],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return ""
     return out.stdout.strip()
 

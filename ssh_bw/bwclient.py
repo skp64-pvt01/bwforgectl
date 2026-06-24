@@ -28,6 +28,34 @@ TYPE_IDENTITY = 4
 TYPE_SSH_KEY = 5
 
 
+def _clean_bw_error(detail: str) -> str:
+    """Strip raw Node.js stacktraces from bw CLI error output."""
+    if not detail:
+        return detail
+    # Keep only the first meaningful line before any stacktrace.
+    lines = detail.split("\n")
+    cleaned: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned.append(line)
+            continue
+        if stripped.startswith("at ") and "(" in stripped and ":" in stripped:
+            continue
+        if stripped.startswith("Node.js v"):
+            continue
+        if stripped.startswith("/snapshot/") or stripped.startswith("file://"):
+            continue
+        if "triggerUncaughtException" in stripped:
+            continue
+        cleaned.append(line)
+    result = "\n".join(cleaned).strip()
+    # If after cleaning we lost the actual message, keep the first line.
+    if not result or len(result) < 5:
+        return lines[0] if lines else detail
+    return result
+
+
 class BitwardenError(Exception):
     """Raised when a bw command or API call fails."""
 
@@ -143,6 +171,8 @@ class BitwardenClient:
                 detail = (
                     f"{detail}\n  The process was terminated (SIGTERM)."
                 )
+            # Clean up raw Node.js stacktraces from bw CLI errors.
+            detail = _clean_bw_error(detail)
             if check:
                 raise BitwardenError(
                     f"`bw {' '.join(args)}` failed (exit {result.code}): {detail}"

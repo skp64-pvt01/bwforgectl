@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import os
 import stat
 import sys
@@ -9,9 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .bwclient import TYPE_SSH_KEY, BitwardenClient
+from .bwclient import TYPE_SSH_KEY, BitwardenClient, BitwardenError
 from .pgp import is_pgp_note
-from .sshscan import SSHKeyPair, _normalize, scan_ssh_dir
+from .sshscan import SSHKeyPair, _derive_public_from_private_text, _normalize, scan_ssh_dir
 
 # Action constants returned in SyncResult.action
 ACTION_CREATED = "created"
@@ -152,8 +153,13 @@ class Importer:
         return f"{self.name_prefix}{pair.name}"
 
     def _build_item(
-        self, pair: SSHKeyPair, template: Dict[str, Any], item_id: Optional[str] = None
+        self,
+        pair: SSHKeyPair,
+        template: Dict[str, Any],
+        item_id: Optional[str] = None,
+        vault_record: Optional[SSHRecord] = None,
     ) -> Dict[str, Any]:
+        public_key = self._resolve_public_key(pair, vault_record)
         item = dict(template)
         item["type"] = TYPE_SSH_KEY
         item["name"] = self._item_name(pair)
@@ -163,12 +169,47 @@ class Importer:
         item["identity"] = None
         item["sshKey"] = {
             "privateKey": pair.private_key,
-            "publicKey": pair.public_key,
+            "publicKey": public_key,
             "keyFingerprint": pair.fingerprint,
         }
         if item_id:
             item["id"] = item_id
         return item
+
+    def _resolve_public_key(
+        self,
+        pair: SSHKeyPair,
+        vault_record: Optional[SSHRecord] = None,
+    ) -> str:
+        if pair.public_key:
+            return pair.public_key
+        derived = _derive_public_from_private_text(pair.private_key)
+        if derived:
+            return derived
+        if pair.encrypted:
+            self._progress(
+                f"  {pair.name} has no public key file and its private key is"
+                f" passphrase-protected."
+            )
+            self._progress(
+                f"  Enter the passphrase to derive the public key (or press Enter"
+                f" to skip this key)."
+            )
+            try:
+                pp = getpass.getpass(f"  Passphrase for {pair.name}: ")
+            except (EOFError, KeyboardInterrupt):
+                pp = ""
+            if pp:
+                derived = _derive_public_from_private_text(pair.private_key, passphrase=pp)
+                if derived:
+                    return derived
+                self._progress(
+                    f"  Wrong passphrase or unable to derive public key for"
+                    f" {pair.name}."
+                )
+        if vault_record and vault_record.public_key:
+            return vault_record.public_key
+        return pair.public_key
 
     # ------------------------------------------------------------------ #
     # Sync
@@ -194,15 +235,24 @@ class Importer:
                     action=ACTION_SKIPPED,
                     detail="new key; would be created (dry run)",
                 )
-            item = self._build_item(pair, template)
-            created = self.client.create_item(item)
-            return SyncResult(
-                name=self._item_name(pair),
-                fingerprint=pair.fingerprint,
-                action=ACTION_CREATED,
-                item_id=created.get("id"),
-                detail="created new SSH key item",
-            )
+            try:
+                item = self._build_item(pair, template)
+                created = self.client.create_item(item)
+                return SyncResult(
+                    name=self._item_name(pair),
+                    fingerprint=pair.fingerprint,
+                    action=ACTION_CREATED,
+                    item_id=created.get("id"),
+                    detail="created new SSH key item",
+                )
+            except BitwardenError as exc:
+                self._diagnostic(f"    error creating item: {exc}")
+                return SyncResult(
+                    name=self._item_name(pair),
+                    fingerprint=pair.fingerprint,
+                    action=ACTION_SKIPPED,
+                    detail=f"create failed: {exc}",
+                )
 
         # Already present - identical?
         if pair.matches(match.private_key, match.public_key):
@@ -232,15 +282,25 @@ class Importer:
                 detail=detail,
             )
 
-        item = self._build_item(pair, template, item_id=match.id)
-        self.client.edit_item(match.id, item)
-        return SyncResult(
-            name=match.name,
-            fingerprint=pair.fingerprint,
-            action=ACTION_UPDATED,
-            item_id=match.id,
-            detail="updated existing SSH key item",
-        )
+        try:
+            item = self._build_item(pair, template, item_id=match.id, vault_record=match)
+            self.client.edit_item(match.id, item)
+            return SyncResult(
+                name=match.name,
+                fingerprint=pair.fingerprint,
+                action=ACTION_UPDATED,
+                item_id=match.id,
+                detail="updated existing SSH key item",
+            )
+        except BitwardenError as exc:
+            self._diagnostic(f"    error updating item: {exc}")
+            return SyncResult(
+                name=match.name,
+                fingerprint=pair.fingerprint,
+                action=ACTION_SKIPPED,
+                item_id=match.id,
+                detail=f"update failed: {exc}",
+            )
 
     def sync_directory(
         self,
