@@ -1,20 +1,47 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# release.sh — Build and release helper for ssh-bw
+# release.sh — Version bump, tag, and push helper for ssh-bw
 #
 # Usage:
-#   scripts/release.sh            # show current version and prompt for new one
-#   scripts/release.sh 1.1.0      # bump to 1.1.0, tag, and optionally push
+#   scripts/release.sh                    # interactive — prompts for version
+#   scripts/release.sh 1.1.0             # bump to 1.1.0, tag, push (optional)
+#   scripts/release.sh -h|--help         # show this message
+#
+# What it does:
+#   1. Validates working tree is clean (no uncommitted changes)
+#   2. Reads current version from ssh_bw/__init__.py
+#   3. Bumps version in ssh_bw/__init__.py, pyproject.toml, setup.py
+#   4. Updates debian/changelog via dch
+#   5. Commits the version bump
+#   6. Creates an annotated git tag (v<version>)
+#   7. Optionally pushes commit + tag to the remote
+#
+# For building .deb packages, use scripts/dev.sh deb after releasing.
 #
 # Environment:
-#   GIT_REMOTE         remote to push to (default: origin)
-#   DEB_DISTRIBUTION   Debian/Ubuntu suite (default: noble)
-#   DEB_URGENCY        changelog urgency (default: medium)
+#   GIT_REMOTE         remote to push to ........................ (default: origin)
+#   DEB_DISTRIBUTION   Debian/Ubuntu suite ...................... (default: noble)
+#   DEB_URGENCY        changelog urgency ........................ (default: medium)
+#   DEBFULLNAME        maintainer name for changelog ........... (default: git user.name)
+#   DEBEMAIL           maintainer email for changelog .......... (default: git user.email)
+#
+# Examples:
+#   scripts/release.sh                     # interactive bump
+#   scripts/release.sh 1.2.0              # bump to 1.2.0
+#   GIT_REMOTE=upstream scripts/release.sh # push to a different remote
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+# ---- help early exit --------------------------------------------------------
+case "${1:-}" in
+    -h|--help|help)
+        sed -n '/^#.*Usage:/,/^[^#]/p' "$0" | sed '1d;$d' | sed 's/^# //; s/^#$//'
+        exit 0
+        ;;
+esac
 
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 DEB_DISTRIBUTION="${DEB_DISTRIBUTION:-noble}"
