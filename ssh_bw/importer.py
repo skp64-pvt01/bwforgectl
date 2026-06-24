@@ -12,7 +12,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .bwclient import TYPE_SSH_KEY, BitwardenClient, BitwardenError
 from .pgp import is_pgp_note
-from .sshscan import SSHKeyPair, _derive_public_from_private_text, _normalize, scan_ssh_dir
+from .sshscan import (
+    SSHKeyPair,
+    _derive_public_from_private_text,
+    _fingerprint_from_public_text,
+    _normalize,
+    scan_ssh_dir,
+)
 
 # Action constants returned in SyncResult.action
 ACTION_CREATED = "created"
@@ -160,6 +166,11 @@ class Importer:
         vault_record: Optional[SSHRecord] = None,
     ) -> Dict[str, Any]:
         public_key = self._resolve_public_key(pair, vault_record)
+        fingerprint = pair.fingerprint
+        if not fingerprint and public_key:
+            derived = _fingerprint_from_public_text(public_key)
+            if derived:
+                fingerprint = derived
         item = dict(template)
         item["type"] = TYPE_SSH_KEY
         item["name"] = self._item_name(pair)
@@ -170,7 +181,7 @@ class Importer:
         item["sshKey"] = {
             "privateKey": pair.private_key,
             "publicKey": public_key,
-            "keyFingerprint": pair.fingerprint,
+            "keyFingerprint": fingerprint,
         }
         if item_id:
             item["id"] = item_id
@@ -183,30 +194,31 @@ class Importer:
     ) -> str:
         if pair.public_key:
             return pair.public_key
+        # Try with empty passphrase first (works for unencrypted keys).
         derived = _derive_public_from_private_text(pair.private_key)
         if derived:
             return derived
-        if pair.encrypted:
+        # Key is encrypted or derivation failed — prompt for passphrase.
+        self._progress(
+            f"  {pair.name} has no public key file and its private key could"
+            f" not be read without a passphrase."
+        )
+        self._progress(
+            f"  Enter the passphrase to derive the public key (or press Enter"
+            f" to skip this key)."
+        )
+        try:
+            pp = getpass.getpass(f"  Passphrase for {pair.name}: ")
+        except (EOFError, KeyboardInterrupt):
+            pp = ""
+        if pp:
+            derived = _derive_public_from_private_text(pair.private_key, passphrase=pp)
+            if derived:
+                return derived
             self._progress(
-                f"  {pair.name} has no public key file and its private key is"
-                f" passphrase-protected."
+                f"  Wrong passphrase or unable to derive public key for"
+                f" {pair.name}."
             )
-            self._progress(
-                f"  Enter the passphrase to derive the public key (or press Enter"
-                f" to skip this key)."
-            )
-            try:
-                pp = getpass.getpass(f"  Passphrase for {pair.name}: ")
-            except (EOFError, KeyboardInterrupt):
-                pp = ""
-            if pp:
-                derived = _derive_public_from_private_text(pair.private_key, passphrase=pp)
-                if derived:
-                    return derived
-                self._progress(
-                    f"  Wrong passphrase or unable to derive public key for"
-                    f" {pair.name}."
-                )
         if vault_record and vault_record.public_key:
             return vault_record.public_key
         return pair.public_key

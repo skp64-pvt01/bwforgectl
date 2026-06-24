@@ -8,6 +8,7 @@ without a passphrase).
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import subprocess
@@ -105,9 +106,24 @@ def _is_encrypted_private(text: str) -> bool:
     head = text[:512]
     if "ENCRYPTED" in head and "BEGIN" in head:
         return True
-    # OpenSSH encrypted keys reference a cipher other than "none".
     if "Proc-Type: 4,ENCRYPTED" in head:
         return True
+    # OpenSSH format: cipher name is in the base64-decoded header.
+    if "-----BEGIN OPENSSH PRIVATE KEY-----" in text:
+        try:
+            lines = text.strip().split("\n")
+            body = "".join(
+                ln.strip() for ln in lines
+                if ln.strip() and "OPENSSH PRIVATE KEY" not in ln
+            )
+            import struct
+            raw = base64.b64decode(body)
+            # Format: magic (15 bytes) | cipher_len (uint32 BE) | cipher | ...
+            clen = struct.unpack(">I", raw[15:19])[0]
+            cipher = raw[19:19 + clen].decode("ascii", errors="replace")
+            return cipher != "none"
+        except Exception:
+            return False
     return False
 
 
