@@ -36,3 +36,6 @@ fake_vault.json
 
 # Graphify knowledge graph output
 graphify-out/
+
+# Virtual environment
+.venv/
