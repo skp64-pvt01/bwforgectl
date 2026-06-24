@@ -8,6 +8,7 @@
 # Commands:
 #   setup        Install system build deps, create venv, install Python deps
 #   test         Run pytest (uses venv if available, otherwise system)
+#   run [args]   Run ssh-bw with arguments (e.g. sync --yes, list --type ssh)
 #   build        Build pip package (wheel + sdist) into dist/
 #   deb          Build .deb package via dpkg-buildpackage (output in parent)
 #   all          setup → test → build → deb (full pipeline)
@@ -21,6 +22,7 @@
 # Examples:
 #   scripts/dev.sh setup           # create .venv and install deps
 #   scripts/dev.sh test            # run tests
+#   scripts/dev.sh run sync --yes  # invoke ssh-bw sync --yes via venv
 #   scripts/dev.sh build           # build pip wheel
 #   scripts/dev.sh deb             # build .deb package
 #   scripts/dev.sh all             # full pipeline
@@ -159,6 +161,21 @@ cmd_test() {
     green "✓ All tests passed"
 }
 
+cmd_run() {
+    local py
+    py="$(venv_python)"
+    if [ -z "$py" ]; then
+        red "Virtual environment not found at $VENV_PATH"
+        ensure_venv_msg
+        exit 1
+    fi
+    if [ $# -eq 0 ]; then
+        "$py" -m ssh_bw --help
+    else
+        "$py" -m ssh_bw "$@"
+    fi
+}
+
 cmd_build() {
     local py
     py="$(venv_python)"
@@ -217,6 +234,7 @@ cmd_help() {
 case "${1:-help}" in
     setup|bootstrap) cmd_setup ;;
     test)            shift; cmd_test "$@" ;;
+    run)             shift; cmd_run "$@" ;;
     build)           cmd_build ;;
     deb)             cmd_deb ;;
     all)             cmd_setup && cmd_test && cmd_build && cmd_deb ;;
