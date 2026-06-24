@@ -170,6 +170,20 @@ def _confirm_update_interactive(pair: SSHKeyPair, record) -> bool:
     return answer in {"y", "yes"}
 
 
+def _shorten_detail(detail: str, width: int = 80) -> str:
+    """Truncate long base64 payloads in error messages for readable display."""
+    import re
+    # Replace long base64 strings (>=40 chars) with a placeholder.
+    shortened = re.sub(
+        r"\b[A-Za-z0-9+/]{40,}={0,2}\b",
+        lambda m: f"…({len(m.group(0))}b base64)…",
+        detail,
+    )
+    if len(shortened) > width:
+        shortened = shortened[:width] + "…"
+    return shortened
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     verbose = _verbose_level(args)
     client = _make_client(args)
@@ -214,7 +228,27 @@ def cmd_sync(args: argparse.Namespace) -> int:
         return 0
 
     for r in results:
-        print(f"[{r.action:<9}] {r.name}  ({r.detail})")
+        action_color = ""
+        suffix = ""
+        if r.action == "unchanged":
+            action_color = "  "
+            detail = r.detail
+        elif r.action == "created":
+            action_color = "+ "
+            detail = r.detail
+        elif r.action == "updated":
+            action_color = "~ "
+            detail = r.detail
+        elif r.action == "skipped":
+            action_color = "- "
+            detail = _shorten_detail(r.detail, width=100)
+        elif r.action == "declined":
+            action_color = "! "
+            detail = r.detail
+        else:
+            action_color = "? "
+            detail = r.detail
+        print(f"{action_color}{r.name:<52s} {detail}")
     counts: dict = {}
     for r in results:
         counts[r.action] = counts.get(r.action, 0) + 1
