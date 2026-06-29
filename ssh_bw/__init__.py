@@ -5,6 +5,7 @@ Public surface:
     from ssh_bw.bwclient import BitwardenClient
     from ssh_bw.credentials import CredentialStore
     from ssh_bw.importer import Importer
+    from ssh_bw.hostscan import scan_host_keys, format_table, fuzzy_match_host
 """
 
 __version__ = "1.0.0"

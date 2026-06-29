@@ -64,56 +64,66 @@ check "--help works" true
 
 # 2. store credentials (encrypted file)
 python -m ssh_bw $GLOBAL \
-    store-credentials --email test@example.com --password "$PASS" $AUTH
-check "store-credentials (encrypted)" true
+    credential store --email test@example.com --password "$PASS" $AUTH
+check "credential store (encrypted)" true
 
 # 3. forget + re-store
-python -m ssh_bw $GLOBAL forget-credentials $AUTH
-check "forget-credentials" true
+python -m ssh_bw $GLOBAL credential forget $AUTH
+check "credential forget" true
 
 # 4. store again for later sync
 python -m ssh_bw $GLOBAL \
-    store-credentials --email test@example.com --password "$PASS" $AUTH
-check "re-store-credentials" true
+    credential store --email test@example.com --password "$PASS" $AUTH
+check "credential re-store" true
 
-# 5. sync (import keys)
-output=$(python -m ssh_bw $GLOBAL \
-    sync --ssh-dir "$SSH_DIR" $AUTH --use-stored --yes 2>&1)
-check "sync (import)" \
-    bash -c "echo '$output' | grep -q 'created'"
-
-# 6. list --type ssh
-output=$(python -m ssh_bw $GLOBAL list --type ssh $AUTH --use-stored 2>&1)
-check "list ssh contains key" \
+# 5. host list
+output=$(python -m ssh_bw $GLOBAL host list --ssh-dir "$SSH_DIR" 2>&1)
+check "host list contains key" \
     bash -c "echo '$output' | grep -q 'id_ed25519'"
 
-# 7. list --type all --json
-output=$(python -m ssh_bw $GLOBAL list --type all --json $AUTH --use-stored)
-check "list --json parses" \
+# 6. sync host (push to vault)
+output=$(python -m ssh_bw $GLOBAL \
+    sync host --ssh-dir "$SSH_DIR" $AUTH --use-stored --yes 2>&1)
+check "sync host (import)" \
+    bash -c "echo '$output' | grep -q 'created'"
+
+# 7. vault list --ssh
+output=$(python -m ssh_bw $GLOBAL vault list --ssh $AUTH --use-stored 2>&1)
+check "vault list --ssh contains key" \
+    bash -c "echo '$output' | grep -q 'id_ed25519'"
+
+# 8. vault list --json
+output=$(python -m ssh_bw $GLOBAL vault list --json $AUTH --use-stored)
+check "vault list --json parses" \
     python3 -c "import sys,json; d=json.loads(sys.stdin.read()); assert len(d['ssh']) > 0" <<< "$output"
 
-# 8. output ssh key
+# 9. vault output
 mkdir -p /tmp/ssh-bw-export
 python -m ssh_bw $GLOBAL \
-    output --type ssh --name id_ed25519 --out-dir /tmp/ssh-bw-export $AUTH --use-stored
+    vault output --type ssh --name id_ed25519 --out-dir /tmp/ssh-bw-export $AUTH --use-stored
 check "output file exists" test -f /tmp/ssh-bw-export/id_ed25519
 check "output pub file exists" test -f /tmp/ssh-bw-export/id_ed25519.pub
 
-# 9. sync again (should be unchanged)
+# 10. sync host again (should be unchanged)
 output=$(python -m ssh_bw $GLOBAL \
-    sync --ssh-dir "$SSH_DIR" $AUTH --use-stored --yes)
+    sync host --ssh-dir "$SSH_DIR" $AUTH --use-stored --yes)
 check "re-sync unchanged" \
     bash -c "echo '$output' | grep -q 'unchanged'"
 
-# 10. delete
+# 11. vault delete
 output=$(python -m ssh_bw $GLOBAL \
-    delete --name id_ed25519 --yes $AUTH --use-stored)
-check "delete key" bash -c "echo '$output' | grep -q 'deleted'"
+    vault delete --name id_ed25519 --yes $AUTH --use-stored)
+check "vault delete" bash -c "echo '$output' | grep -q 'deleted'"
 
-# 11. verify deletion
-output=$(python -m ssh_bw $GLOBAL list --type ssh $AUTH --use-stored)
-check "list after delete empty" \
-    bash -c "echo '$output' | grep -q 'SSH keys (0)'"
+# 12. verify deletion
+output=$(python -m ssh_bw $GLOBAL vault list --ssh $AUTH --use-stored)
+check "vault list after delete empty" \
+    bash -c "echo '$output' | grep -q 'SSH keys in vault (0)'"
+
+# 13. host search
+output=$(python -m ssh_bw $GLOBAL host search "SHA256" --ssh-dir "$SSH_DIR" 2>&1)
+check "host search finds key" \
+    bash -c "echo '$output' | grep -q 'match'"
 
 # ----- summary -------------------------------------------------------------
 echo ""
