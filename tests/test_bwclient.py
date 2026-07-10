@@ -1,6 +1,6 @@
-"""Tests for :mod:`ssh_bw.bwclient` using the fake bw CLI."""
+"""Tests for :mod:`bw_forge_ctl.bwclient` using the fake bw CLI."""
 
-from ssh_bw.bwclient import TYPE_SSH_KEY, BitwardenClient
+from bw_forge_ctl.bwclient import TYPE_SSH_KEY, BitwardenClient
 
 
 def _client(bw_path: str) -> BitwardenClient:

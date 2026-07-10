@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# release.sh — Version bump, tag, and push helper for ssh-bw
+# release.sh — Version bump, tag, and push helper for bwforgectl
 #
 # Usage:
 #   scripts/release.sh                    # interactive — prompts for version
@@ -9,8 +9,8 @@
 #
 # What it does:
 #   1. Validates working tree is clean (no uncommitted changes)
-#   2. Reads current version from ssh_bw/__init__.py
-#   3. Bumps version in ssh_bw/__init__.py, pyproject.toml, setup.py
+#   2. Reads current version from bw_forge_ctl/__init__.py
+#   3. Bumps version in bw_forge_ctl/__init__.py, pyproject.toml, setup.py
 #   4. Updates debian/changelog via dch
 #   5. Commits the version bump
 #   6. Creates an annotated git tag (v<version>)
@@ -69,7 +69,7 @@ if ! command -v dch &>/dev/null; then
 fi
 
 # ---- read current version --------------------------------------------------
-CURRENT="$(python3 -c "from ssh_bw import __version__; print(__version__)")"
+CURRENT="$(python3 -c "from bw_forge_ctl import __version__; print(__version__)")"
 
 # ---- determine new version -------------------------------------------------
 if [ $# -ge 1 ]; then
@@ -107,8 +107,8 @@ if ! [[ $confirm =~ ^[yY] ]]; then
 fi
 
 # ---- 1. Update Python package version files --------------------------------
-blue "Updating ssh_bw/__init__.py …"
-sed -i "s/^__version__ = \".*\"/__version__ = \"${NEW}\"/" ssh_bw/__init__.py
+blue "Updating bw_forge_ctl/__init__.py …"
+sed -i "s/^__version__ = \".*\"/__version__ = \"${NEW}\"/" bw_forge_ctl/__init__.py
 
 blue "Updating pyproject.toml …"
 sed -i "s/^version = \".*\"/version = \"${NEW}\"/" pyproject.toml
@@ -129,7 +129,7 @@ else
     # Fallback: prepend a manual entry
     DATE="$(date -R)"
     cat > /tmp/changelog.new <<EOF
-ssh-bw (${DEB_REVISION}) ${DEB_DISTRIBUTION}; urgency=${DEB_URGENCY}
+bwforgectl (${DEB_REVISION}) ${DEB_DISTRIBUTION}; urgency=${DEB_URGENCY}
 
   * Release version ${NEW}.
 

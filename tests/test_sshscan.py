@@ -1,8 +1,8 @@
-"""Tests for :mod:`ssh_bw.sshscan`."""
+"""Tests for :mod:`bw_forge_ctl.sshscan`."""
 
 from pathlib import Path
 
-from ssh_bw.sshscan import (
+from bw_forge_ctl.sshscan import (
     SSHKeyPair,
     is_private_key_file,
     scan_ssh_dir,

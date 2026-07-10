@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Release workflow for ssh-bw
+# Release workflow for bwforgectl
 #
 # Triggered by an annotated tag matching "v*" (created via
 # scripts/release.sh).  Builds .deb packages for each Ubuntu LTS release
@@ -54,11 +54,11 @@ jobs:
 
       - name: Rename artifact
         run: |
-          mv ../ssh-bw_*.deb ../ssh-bw_${{ matrix.distro }}_amd64.deb
+          mv ../bwforgectl_*.deb ../bwforgectl_${{ matrix.distro }}_amd64.deb
 
       - name: Upload .deb as release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ../ssh-bw_*.deb
+          files: ../bwforgectl_*.deb
           fail_on_unmatched_files: false
           generate_release_notes: true

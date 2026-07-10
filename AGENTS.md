@@ -1,86 +1,149 @@
-# ssh-bw — SSH ↔ Bitwarden sync
+# BwForgeCtl — SSH ↔ Bitwarden sync & Git account management
 
 ## Purpose & Objectives
 
-Synchronise SSH key pairs between a local `~/.ssh` directory and a Bitwarden vault, providing a single source of truth for SSH credentials. Designed for developers and sysadmins who manage multiple machines and want their SSH keys (and PGP notes) backed up, versioned, and accessible from any device via Bitwarden.
+Manage SSH key pairs and Git (GitHub/GitLab) credentials through a Bitwarden
+vault — a single source of truth for SSH keys and git account configuration,
+accessible from any device.
 
-### Key Objectives Achieved
+### Key Objectives
 
-- **Bidirectional sync** — push local keys to the vault (`--from-disk`) or pull vault keys to disk (`--from-server`), with safe matching by fingerprint → item name → private key body.
-- **Safe dry-run mode** — bare `ssh-bw sync` is always read-only; explicit `--yes` or `--update` flags required to mutate data.
-- **Multiple credential backends** — OS keyring (GNOME/KWallet/macOS/Windows) with encrypted-file fallback using PBKDF2-HMAC-SHA256 + Fernet (AES).
-- **Robust Bitwarden transport** — CLI subprocess with 30s timeout, empty-stdin sentinel, SIGKILL detection, and automatic re-authentication on session expiry; optional `bw serve` REST API for faster bulk operations.
-- **PGP awareness** — detects and lists PGP private/public key blocks stored as Bitwarden secure notes.
-- **Production packaging** — Debian `.deb` via `dpkg-buildpackage`, GitHub Actions CI that builds and publishes releases on `v*` tags, and `scripts/release.sh` for version bumps.
-- **Comprehensive tests** — 36 pytest tests covering scanning, sync logic, matching, credential round-trips, and transport edge cases.
-- **Developer documentation** — PlantUML architecture diagrams (module, class, sequence) in `diagrams/` and `DEVELOPER.md`.
+- **Bidirectional SSH key sync** — push local keys to the vault or pull vault
+  keys to disk, with safe matching by fingerprint → item name → key body.
+- **Git account lifecycle** — create new GitHub/GitLab accounts (generate SSH
+  key, create BW login + SSH key items, print SSH config stanza).
+- **Vault auditing** — detect duplicates, orphan logins/keys, missing fields,
+  and naming convention violations.
+- **SSH auth verification** — test `ssh -T` against configured hosts for every
+  git account in the vault.
+- **Robust Bitwarden transport** — CLI subprocess with 30s timeout, empty-stdin
+  sentinel, SIGKILL detection, and auto-reauth; optional `bw serve` REST API.
+- **Multiple credential backends** — OS keyring with encrypted-file fallback
+  (PBKDF2-HMAC-SHA256 + Fernet AES).
+- **Production packaging** — Debian `.deb`, GitHub Actions CI, `pip install`.
+- **33 pytest tests** covering all core modules.
 
 ## Project Structure
 
 ```
-ssh-bw/
-├── ssh_bw/            # Package (8 modules)
-│   ├── cli.py         # argparse CLI, command dispatch, credential resolution
-│   ├── bwclient.py    # Bitwarden CLI + REST transport, session health
-│   ├── importer.py    # Sync logic (disk↔vault), dry-run support
-│   ├── credentials.py # Credential store (keyring / encrypted PBKDF2+Fernet file)
-│   ├── sshscan.py     # ~/.ssh key pair scanner, fingerprint via ssh-keygen
-│   ├── pgp.py         # PGP secure-note detection
+bwforgectl/
+├── bw_forge_ctl/       # Package (9 modules)
+│   ├── cli.py          # argparse CLI, command dispatch, credential resolution
+│   ├── bwclient.py     # Bitwarden CLI + REST transport, session health
+│   ├── credentials.py  # Credential store (keyring / encrypted PBKDF2+Fernet)
+│   ├── importer.py     # Sync logic (disk↔vault), dry-run support
+│   ├── sshscan.py      # ~/.ssh key pair scanner, fingerprint via ssh-keygen
+│   ├── gitacct.py      # Git account creation, audit, verification
+│   ├── pgp.py          # PGP secure-note detection
+│   ├── hostscan.py     # Host key scanning + fuzzy search
 │   ├── __init__.py
 │   └── __main__.py
-├── tests/             # 36 pytest tests (fake_bw.py, conftest.py, 4 test modules, 2 shell drivers)
-├── debian/            # Debian packaging (dpkg-buildpackage)
-├── diagrams/          # 6 PlantUML source + PNG diagrams
-├── scripts/           # release.sh (version bump + tag + push)
-├── .github/           # GitHub Actions release.yml (build .deb on v* tag)
-├── pyproject.toml     # Project metadata, entry point ssh-bw=ssh_bw.cli:main
-├── setup.py           # Legacy setup (mirrors pyproject.toml)
-├── README.md          # User documentation
-├── DEVELOPER.md       # Developer documentation with diagrams
-└── AGENTS.md          # THIS FILE
+├── tests/              # 63 pytest tests (fake_bw.py, conftest.py, 5 test modules)
+├── docs/
+│   ├── accounts.md     # Full GitHub/GitLab account inventory
+│   ├── ssh-config.example  # SSH config host stanzas for all accounts
+│   └── git-with-ssh.md # Multi-account git via SSH config
+├── debian/             # Debian packaging
+├── diagrams/           # 6 PlantUML diagrams
+├── scripts/            # dev.sh, release.sh
+├── .github/            # GitHub Actions release workflow
+├── pyproject.toml      # Entry point: bwforgectl=bw_forge_ctl.cli:main
+├── setup.py
+├── README.md
+├── DEVELOPER.md
+└── AGENTS.md           # THIS FILE
 ```
-
-## Architecture
-
-- **Entry point**: `ssh-bw` → `ssh_bw.cli:main` → argparse dispatches to subcommand handlers.
-- **Transport**: `BitwardenClient` wraps `bw` CLI (`subprocess`) or optional `bw serve` REST API. 30s timeout, empty-stdin sentinel, SIGKILL detection, auto-reauth on session expiry.
-- **Sync direction**: `--from-disk` (default, local→vault) or `--from-server` (vault→local).
-- **Matching**: fingerprint → item name → private-key body.
-- **Dry-run mode**: bare `sync` (no `--yes`/`--update`) is read-only — reports differences, no mutations.
-- **Credential resolution**: CLI flags → env vars → credential store → interactive prompt → optional store update on failure.
-
-## 36 Tests
-
-- `test_sshscan.py` — key pair scanning, normalization, fingerprinting
-- `test_importer.py` — sync logic, matching, dry-run, create/update/skip/decline
-- `test_bwclient.py` — bw CLI wrapper, session health, serve lifecycle
-- `test_helpers.py` — pgp detection, normalize utility
-- `test_credentials.py` — keyring + encrypted-file store round-trips
-- Shell drivers: `test_driver.sh`, `test_system.sh`
 
 ## CLI Commands
 
 | Command | Description |
-|---|---|
-| `ssh-bw store-credentials` | Persist credentials (keyring or encrypted file) |
-| `ssh-bw forget-credentials` | Remove stored credentials |
-| `ssh-bw sync` | Compare keys (dry run); `--yes` auto-confirms; `--update` prompts |
-| `ssh-bw sync --from-server` | Pull vault keys to local disk |
-| `ssh-bw list --type ssh/pgp/all` | List vault items |
-| `ssh-bw output --type ssh/pgp` | Dump keys/notes to stdout or files |
-| `ssh-bw delete --name/--id` | Delete vault SSH items |
+|---------|-------------|
+| `bwforgectl credential store` | Persist BW credentials (keyring or encrypted file) |
+| `bwforgectl credential forget` | Remove stored credentials |
+| `bwforgectl host list` | List local SSH and GPG keys |
+| `bwforgectl host search <q>` | Fuzzy-search local keys by fingerprint or name |
+| `bwforgectl vault list` | List SSH / PGP keys in vault |
+| `bwforgectl vault search <q>` | Fuzzy-search vault keys |
+| `bwforgectl vault output` | Export vault keys to files or stdout |
+| `bwforgectl vault delete` | Remove keys from vault |
+| `bwforgectl account create` | Create new git account (key + BW items) |
+| `bwforgectl account verify` | Verify accounts via SSH auth |
+| `bwforgectl audit vault` | Audit vault for consistency issues |
+| `bwforgectl sync` | Bidirectional sync (default: dry run) |
+| `bwforgectl sync host` | Push local keys to vault |
+| `bwforgectl sync vault` | Pull vault keys to disk |
 
-## Key Design Decisions
+## Account Management
 
-- `--yes` alone auto-confirms (not gated on `--update`); bare `sync` = dry run.
-- `BW_STORE_PASSPHRASE` env var auto-triggers credential store (no `--use-stored` needed).
-- Prog name `ssh-bw` (hyphen) in help text, matching installed binary.
-- Three verbosity levels: `--quiet`=0, default=1, `-v`=2, `-vv`=3.
-- Env var fallbacks: `BW_PATH`, `BW_NO_SYNC`, `BW_QUIET`, `BW_EMAIL`, `BW_PASSWORD`, `BW_SESSION`, `BW_STORE_PASSPHRASE`, `SERVE_PORT`.
+### Naming Conventions
+
+**SSH key files on disk:**
+```
+~/.ssh/id_ed25519-<registered-email>
+```
+
+**Bitwarden item names:**
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Login | `git: <platform>: <account>` | `git: github: skp1964-dev` |
+| SSH Key (type 5) | `id_ed25519-<email>` | `id_ed25519-skp1964.dev@outlook.com` |
+| Token | `git: <platform>: <acct>: <type>` | `git: github: pilakkat1964: pat` |
+| Self-hosted | `git: <hostname>: <user>` | `git: gitlab.pilakkat.freeddns.org: root` |
+
+**SSH config hosts:**
+- GitHub: `git.<account-name>.com`
+- GitLab: `gitlab.<account-name>.com`
+- Self-hosted: actual hostname
+
+### Account Inventory
+
+Full account inventory is maintained in `docs/accounts.md`.
+SSH config stanzas are in `docs/ssh-config.example`.
+
+### Known Issues
+
+| # | Issue | Severity | Action |
+|---|-------|----------|--------|
+| 1 | `newbyc333` SSH key authenticates as skp1964-dev | 🔴 | Generate + register new key |
+| 2 | `proteus` SSH key authenticates as skp64-pvtconfs/skp64prj-shared01 | 🔴 | Generate + register new key |
+| 3 | `goofybits` SSH key authenticates as skp64prj-shared01 | 🔴 | Generate + register new key |
+| 4 | `pilakkat` (GitLab) SSH key authenticates as skp64prj-shared01 | 🔴 | Generate + register new key |
+| 5 | `skp64prj-hub01` has no SSH key | 🔴 | Generate + register key |
+| 6 | `skp64-dev` has no SSH key | 🟡 | Generate + register key |
+| 7 | Self-hosted GitLab instances have no SSH keys | 🟡 | Generate keys when reachable |
+| 8 | Duplicate BW items (e.g., skp64prj-hub01 ×4) | 🟡 | Consolidate |
+| 9 | Mystery `git: github: pilakkat` login | 🟡 | Verify if real account |
+
+## Architecture
+
+- **Entry point**: `bwforgectl` → `bw_forge_ctl.cli:main` → argparse dispatch.
+- **Transport**: `BitwardenClient` wraps `bw` CLI or `bw serve` REST API.
+- **Matching**: fingerprint → item name → private-key body.
+- **Credential resolution**: CLI flags → env vars → keyring → prompt.
+- **SSH key gen**: `ssh-keygen -t ed25519` via subprocess.
+- **Auth verify**: `ssh -T git@<host>` via subprocess.
+
+## 63 Tests
+
+- 36 original tests (bwclient, credentials, importer, sshscan)
+- 27 new gitacct tests (parsing, builds, integration with fake vault, audit)
 
 ## Packaging
 
-- Debian: `dpkg-buildpackage -b -uc -us` → `../ssh-bw_1.0.0-1_all.deb`.
-- CI: GitHub Actions on `v*` tag → build .deb on ubuntu-24.04 → publish release.
-- Release: `scripts/release.sh <version>` bumps 3 files + changelog, creates annotated tag, optionally pushes.
-- Dependency: `bw` CLI suggested (Snap), `cryptography` required.
+- PyPI: `pip install bwforgectl`
+- Debian: `dpkg-buildpackage -b -uc -us` → `../bwforgectl_*.deb`
+- CI: GitHub Actions on `v*` tag → build .deb on ubuntu-24.04
+- Release: `scripts/release.sh <version>`
+
+## Remote
+
+- Repo: `git@github.skp64-pvt01.com:skp64-pvt01/bwforgectl.git`
+
+## Agent Handoff
+
+When resuming work, provide:
+1. This `AGENTS.md`
+2. `docs/accounts.md` for account inventory
+3. `docs/ssh-config.example` for SSH config
+4. Bitwarden session (`bw unlock` + `export BW_SESSION`)

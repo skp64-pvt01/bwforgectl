@@ -1,0 +1,259 @@
+#
+# For formal use
+#   Github UID : pilakkat1964
+#   primary email : pilakkat1964@gmail.com
+#
+#  Key status       : 👍
+#  password status  : 👍
+#
+Host github.pilakkat1964.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-pilakkat1964@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+  
+  # To ensure that the SSH_AUTH_SOCK is set correctly on statup, use
+  #
+  # 	systemctl --user set-environment SSH_AUTH_SOCK=$HOME/.bitwarden-ssh-agent.sock
+  #
+
+ # SSH Key 
+ # 
+ #id_ed25519-pilakkat.shared[pilakkat.shared@gmail.com].pub
+ # SHA256:v+f7ue/sx0IAHRFaxaCrhv4ZdS9fZcgdTtiDXc/T0Zk
+ #
+ # Also is given access
+
+#  Shared account; shared with family
+#
+#  Github UID        : pilakkat-shared
+#  Primary email    : pilakkat@gmail.com
+#
+#  Key status       : 👍
+#  Password status  : 👍
+#  Pass Key  status : 👍
+
+#
+#  Note : SSH Key works; but password needs fixing. 
+##
+Host github.pilakkat-shared.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-pilakkat.shared@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+#
+# Primarily for configuration files, dotfiles etc.
+#
+#
+#  Key status       : 👍
+#
+Host github.skp64-pvtconfs.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-pilakkat+skp64-pvtconfs@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+
+################################################################################
+# Github & GitLab Rpos.
+#   Many uses individual keys. But some share the SSH 
+#   keys. Since Github requires primary emails to be unique as alternative uids,
+#   the email is aliased to pilakkat+<repo-name>@gmail.com. This allows multiple 
+#   accounts to share the same email address, while still being able to use 
+#   different SSH keys for each account.
+ ################################################################################
+#
+#
+
+############################################################
+#
+#  Github UID        : skp1964-dev
+#  Primary email     : skp1964.dev@outlook.com
+#
+#
+# Default account; used for personal projects and contributions to open source 
+# projects id file points to github account skp1964-dev for ease of use in git
+# remote URLs
+# 
+#
+#  Key status       : 👍
+#  password status  : 👍
+#
+# Note : 
+############################################################
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skp1964.dev@outlook.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+# This is same, but an alias to follow the convention of 
+# using the github repository name as part of the synthetic 
+# URL. This allows for more intuitive git remote URLs.
+#
+#  Key status       : 👍
+#  password status  : 👍
+Host github.skp1964-dev.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skp1964.dev@outlook.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+
+Host github.proteus
+	HostName github.com
+	User git
+  IdentityFile ~/.ssh/id_rsa_proteus.cpi.3
+	ForwardAgent yes
+
+
+# Use
+#	git clone git@github.proteus:<user>/<repo>.git
+#
+# Show remote
+#
+#  git remote get-url origin --all
+#
+# Other options include the following
+#
+#  Set In the shell:
+#
+# 	GIT_SSH_COMMAND="ssh -i ~/.ssh/your_private_key"
+#
+# Or run in the local git folder run
+#
+# 	git config core.sshCommand "ssh -i ~/.ssh/your_private_key -F /dev/null"
+#
+# Also create
+#   ~/.config/environment.d/bitwarden-ssh.conf 
+# with content
+# 	SSH_AUTH_SOCK="${HOME}/.bitwarden-ssh-agent.sock"
+#
+# To make sure openssh-agent do not highjack do the following
+# 
+#
+# 	systemctl --user mask ssh-agent.socket gcr-ssh-agent.socket gpg-agent-ssh.socket
+#
+# In future to revert
+#
+#  systemctl --user unmask ssh-agent.socket gcr-ssh-agent.socket gpg-agent-ssh.socket
+#
+#  systemctl --user enable --now ssh-agent.socket
+#
+  
+
+#
+#  Key status       : 👍
+#  password status  : 👍
+# Rust learning & experiments account
+Host github.skp1964-rust.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skp1964.rust@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+
+Host gitlab.pilakkat.freeddns.org
+	User git
+	IdentityFile ~/.ssh/id_rsa_proteus.cpi.3
+	ForwardAgent yes
+
+
+# SDR learning & experiments account
+#  Key status       : 👍
+#  password status  : 👍
+Host github.skp1964-sdr.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skp1964.sdr@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+    
+############################################################
+# Gitlab.com accounts
+############################################################
+#
+
+#
+# Note that the userid does not appear as part of the url in case of gitlab.com,
+# but it is used as part of the synthetic URL to allow for multiple accounts 
+# to be used with different SSH keys.
+#
+Host gitlab.skpproj01.com
+    HostName gitlab.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skpdev19640101@gmail.com
+    IdentitiesOnly yes
+
+# 
+# skp64prj@gmai.com	5c:a4:c8:bb:9d:30:96:db:7b:a8:9d:3f:b9:da:d5:7f
+#
+# git@gitlab.com:skp64prj-group/llm-assisted-maritime-trx.git
+#
+Host gitlab.skp64prj.com
+    HostName gitlab.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skp64prj@gmail.com
+    IdentitiesOnly yes
+
+###
+
+#
+#  For pvt study. 
+#  Coursera, Udemy, etc. courses; and other private repos.
+#
+Host gitlab.skp64prj-shared01.com
+    HostName gitlab.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-skp64prj+skp64prj.shared01@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+############################################################
+# These are scratch pad accounts that share the same SSH key; 
+# and also the email (pilakkat@gmail.com), aliased to 
+# pilakkat+<repo-name>@gmail.com
+#
+# It's not really necessay to have unique SSH key's for these accounts, 
+# as they are used for authentication only. However the registered 
+# email address must be unique for each account, as Github uses 
+# the email address as the primary identifier for the account.
+#
+# E.g. : "git clone git@github.skp64-pvt01.com:skp64-pvt01/Landmark-Meritus.git"
+#
+############################################################
+#  Key status       : 👍
+#  password status  : 👍
+#
+Host github.skp64-pvt01.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519-pilakkat+skp64-pvt01@gmail.com
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+
+    
+
+ ################################################################################
+#   
+#  Key status       : 👍
+#  Key status       : 👎
+
+Host macbookair91
+    HostName santhosh-macbookair91.local
+    User sysadmin
+    IdentityFile ~/.ssh/id_rsa-<sysadmin-key>
+    IdentitiesOnly yes
+
+Host snowdream-b650e-zerotier snowdream-b650e
+     HostName snowdream-b650e-zerotier
+     User sysadmin
+     IdentityFile ~/.ssh/id_rsa-<sysadmin-key>
+     IdentitiesOnly yes

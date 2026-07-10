@@ -3,7 +3,7 @@
 ## Architecture overview
 
 ```
-ssh_bw/
+bw_forge_ctl/
   cli.py          — argparse entry point, subcommand dispatch
   bwclient.py     — Bitwarden vault transport (CLI + REST)
   credentials.py  — Credential persistence (keyring + encrypted file)
@@ -11,7 +11,7 @@ ssh_bw/
   sshscan.py      — Local ~/.ssh directory scanner
   pgp.py          — PGP note detection helper
   __init__.py     — Package metadata (__version__)
-  __main__.py     — `python -m ssh_bw` shim
+  __main__.py     — `python -m bw_forge_ctl` shim
 
 tests/
   conftest.py         — pytest fixtures
@@ -92,7 +92,7 @@ uses the CLI path. Mode is transparent to callers — `list_items`, `create_item
 ### Session health
 
 The Bitwarden CLI sometimes invalidates sessions or prompts for the master
-password when the session key is missing/stale.  `ssh-bw` handles this with
+password when the session key is missing/stale.  `bwforgectl` handles this with
 three mechanisms (illustrated below):
 
 ![Session health check flow](diagrams/session-health.png)
@@ -118,7 +118,7 @@ Two backends, auto-selected:
    Nothing is written to disk.
 
 2. **Encrypted file** (fallback) — Writes a JSON payload to
-   `~/.config/ssh-bw/credentials.enc` (mode 0600). The encryption key is
+   `~/.config/bwforgectl/credentials.enc` (mode 0600). The encryption key is
    derived from a user-supplied store passphrase via PBKDF2-HMAC-SHA256
    (390 000 iterations, 16-byte random salt). Payload is AES-128 encrypted
    with Fernet.
@@ -134,7 +134,7 @@ CLI layer (`_resolve_credentials` in `cli.py`) decides the order of precedence:
 
 Orchestrates the full sync cycle. Two directions are supported:
 
-**Disk → Vault** (`ssh_bw sync`, the default):
+**Disk → Vault** (`bw_forge_ctl sync`, the default):
 
 ![Sync disk → vault](diagrams/sync-disk-to-vault.png)
 
@@ -151,7 +151,7 @@ The matching strategy prioritises fingerprint as a stable identity across
 re-keying. Name match handles prefix changes. Private-key body match catches
 import-from-backup scenarios where all prior metadata is lost.
 
-**Vault → Disk** (`ssh_bw sync --from-server`):
+**Vault → Disk** (`bw_forge_ctl sync --from-server`):
 
 ![Sync vault → disk](diagrams/sync-vault-to-disk.png)
 
@@ -197,7 +197,7 @@ pytest -v
 
 ### 2. Integration / driver test — 12 tests
 
-`tests/test_driver.sh` runs the full `ssh_bw` CLI pipeline against the fake
+`tests/test_driver.sh` runs the full `bw_forge_ctl` CLI pipeline against the fake
 `bw` backend (store → sync → list → output → re-sync → delete → verify).
 
 ```bash
@@ -236,7 +236,7 @@ sudo apt install devscripts debhelper dh-python python3-all python3-setuptools
 dpkg-buildpackage -b -uc -us
 ```
 
-Build output is `../ssh-bw_1.0.0-1_all.deb`. The package is format `3.0
+Build output is `../bwforgectl_1.0.0-1_all.deb`. The package is format `3.0
 (native)` — there is no separate upstream tarball.
 
 The `debian/rules` file pins `PATH := /usr/bin:$(PATH)` to bypass pyenv or
@@ -247,7 +247,7 @@ other non-system Python installations.
 ```bash
 pip install build
 python -m build
-pip install dist/ssh_bw-1.0.0-py3-none-any.whl
+pip install dist/bw_forge_ctl-1.0.0-py3-none-any.whl
 ```
 
 ## Release workflow
@@ -274,7 +274,7 @@ The [`scripts/release.sh`](scripts/release.sh) script automates the full release
 process. It:
 
 1. **Checks** that the working tree is clean.
-2. **Bumps the version** in `ssh_bw/__init__.py`, `pyproject.toml`, `setup.py`,
+2. **Bumps the version** in `bw_forge_ctl/__init__.py`, `pyproject.toml`, `setup.py`,
    and `debian/changelog`.
 3. **Commits** the version bump.
 4. **Creates an annotated tag** `v<version>`.
@@ -304,7 +304,7 @@ After pushing the tag, the **GitHub Actions workflow**
 dpkg-buildpackage -b -uc -us
 ```
 
-Build output is `../ssh-bw_<version>-1_all.deb`.
+Build output is `../bwforgectl_<version>-1_all.deb`.
 
 ### Adding a new Ubuntu release
 
@@ -352,7 +352,7 @@ with `--json` output or piped stdout.  Three levels are controlled by `-v` /
 Output examples:
 
 ```
-$ ssh-bw sync --update
+$ bwforgectl sync --update
   logging in to Bitwarden …
   logged in
   scanning /home/user/.ssh …
@@ -368,7 +368,7 @@ $ ssh-bw sync --update
 ```
 
 ```
-$ ssh-bw --use-serve sync -v
+$ bwforgectl --use-serve sync -v
   starting bw serve on 127.0.0.1:8087 …
   … waiting for bw serve (3s)
   … waiting for bw serve (7s)
@@ -399,8 +399,8 @@ How it works:
 | `error: Could not decrypt stored credentials` | Wrong `--store-passphrase` for encrypted-file backend. |
 | `bw serve did not start in time.` | `bw serve` not available or port already in use. |
 | `bw serve exited unexpectedly` | The `bw` binary is missing or broken. Check `bw --version`. |
-| `bw list items failed (exit -9)` | `bw` was killed (SIGKILL) — usually because it tried to prompt for the master password. The session key is invalid or missing; `ssh-bw` now detects this and re-authenticates automatically. |
-| `bw list items timed out` | `bw` likely tried to wait for interactive password input. `ssh-bw` now sends empty stdin and enforces a 30s timeout so this fails fast. |
+| `bw list items failed (exit -9)` | `bw` was killed (SIGKILL) — usually because it tried to prompt for the master password. The session key is invalid or missing; `bwforgectl` now detects this and re-authenticates automatically. |
+| `bw list items timed out` | `bw` likely tried to wait for interactive password input. `bwforgectl` now sends empty stdin and enforces a 30s timeout so this fails fast. |
 | `Vault session is invalid or has expired` | The `--session` key or `BW_SESSION` env var is stale, and no credentials were provided for re-auth. Use `--email`/`--password` or `--use-stored`. |
 | `Bitwarden CLI ('bw') not found` | The `bw` binary is not installed or not on PATH. Install it (`snap install bw`) or set `--bw-path`. |
 | `BrokenPipeError` | Pipelines from Python to another tool (e.g., `grep`); Python handles this with default SIGPIPE. |

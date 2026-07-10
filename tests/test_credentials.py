@@ -1,9 +1,9 @@
-"""Tests for :mod:`ssh_bw.credentials` using the encrypted-file backend."""
+"""Tests for :mod:`bw_forge_ctl.credentials` using the encrypted-file backend."""
 
 import pytest
 from pathlib import Path
 
-from ssh_bw.credentials import CredentialError, Credentials, CredentialStore
+from bw_forge_ctl.credentials import CredentialError, Credentials, CredentialStore
 
 
 class TestEncryptedFileStore:

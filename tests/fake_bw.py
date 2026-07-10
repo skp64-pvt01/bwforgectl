@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A minimal fake implementation of the Bitwarden ``bw`` CLI.
 
-It is just complete enough to exercise :mod:`ssh_bw.bwclient` end-to-end
+It is just complete enough to exercise :mod:`bw_forge_ctl.bwclient` end-to-end
 without touching a real vault or the network.  Vault state is persisted as
 JSON at ``$FAKE_BW_VAULT`` (default ./fake_vault.json).
 

@@ -1,5 +1,5 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: ssh-bw
+Upstream-Name: bwforgectl
 Upstream-Contact: pilakkat1964 <pilakkat1964@gmail.com>
 
 Files: *

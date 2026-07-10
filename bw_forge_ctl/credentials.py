@@ -7,7 +7,7 @@ Two backends are supported, selected automatically:
    importable.  Nothing is written to disk in plaintext.
 
 2. **encrypted file** - a fallback that stores the credentials in
-   ``~/.config/ssh-bw/credentials.enc`` encrypted with AES (Fernet).  The
+    ``~/.config/bwforgectl/credentials.enc`` encrypted with AES (Fernet).  The
    encryption key is derived (PBKDF2-HMAC-SHA256) from a *store passphrase*
    the user provides; the passphrase itself is never written to disk.
 
@@ -36,9 +36,9 @@ except Exception:  # pragma: no cover - depends on environment
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+SERVICE_NAME = "bwforgectl"
 
-SERVICE_NAME = "ssh-bw-importer"
-_DEFAULT_CONFIG_DIR = Path.home() / ".config" / "ssh-bw"
+_DEFAULT_CONFIG_DIR = Path.home() / ".config" / "bwforgectl"
 _KDF_ITERATIONS = 390_000
 
 

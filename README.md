@@ -1,4 +1,4 @@
-# ssh-bw
+# bwforgectl
 
 Sync local SSH key pairs (and PGP notes) with a Bitwarden vault.
 
@@ -7,7 +7,7 @@ Sync local SSH key pairs (and PGP notes) with a Bitwarden vault.
 ### Debian package (Ubuntu 24.04+ / Debian)
 
 ```bash
-sudo dpkg -i ssh-bw_1.0.0-1_all.deb
+sudo dpkg -i bwforgectl_1.0.0-1_all.deb
 sudo apt install -f  # pull in dependencies
 ```
 
@@ -24,13 +24,13 @@ pip install .
 
 ```bash
 # 1. Store credentials (you will be prompted for email/password)
-ssh-bw store-credentials
+bwforgectl store-credentials
 
 # 2. Scan ~/.ssh and import keys into the vault
-ssh-bw sync --update
+bwforgectl sync --update
 
 # 3. List vaulted SSH keys
-ssh-bw list --type ssh
+bwforgectl list --type ssh
 ```
 
 ## CLI reference
@@ -38,7 +38,7 @@ ssh-bw list --type ssh
 Global flags appear **before** the subcommand; auth flags appear **after** it.
 
 ```
-ssh-bw [global-opts] <command> [auth-opts] [command-opts]
+bwforgectl [global-opts] <command> [auth-opts] [command-opts]
 ```
 
 ### Global options
@@ -63,7 +63,7 @@ subcommand name.
 | `--session KEY` | Existing `BW_SESSION` to reuse (skips login/unlock). |
 | `--use-stored` | Load credentials from the secure store. |
 | `--store-passphrase PASS` | Passphrase for the encrypted-file credential store. |
-| `--config-dir DIR` | Credential store directory (default `~/.config/ssh-bw`). |
+| `--config-dir DIR` | Credential store directory (default `~/.config/bwforgectl`). |
 | `--no-keyring` | Force encrypted-file backend even if OS keyring is available. |
 | `--name-prefix PREFIX` | Prefix for vault item names (default `SSH: `). |
 
@@ -75,7 +75,7 @@ Persist your Bitwarden email and master password in the OS keyring or an
 encrypted file (auto-selected).
 
 ```bash
-ssh-bw store-credentials --email user@example.com
+bwforgectl store-credentials --email user@example.com
 ```
 
 If no `--password` is given you will be prompted. When the OS keyring is
@@ -86,7 +86,7 @@ unavailable you must provide `--store-passphrase` (or you will be prompted).
 Remove previously stored credentials.
 
 ```bash
-ssh-bw forget-credentials
+bwforgectl forget-credentials
 ```
 
 #### `sync`
@@ -96,16 +96,16 @@ vault.  New keys are created; existing keys with matching content are skipped.
 
 ```bash
 # Import keys interactively (offers to update changed keys)
-ssh-bw sync --update
+bwforgectl sync --update
 
 # Non-interactive: auto-accept updates
-ssh-bw sync --update --yes
+bwforgectl sync --update --yes
 
 # Use a custom directory
-ssh-bw sync --ssh-dir /etc/ssh
+bwforgectl sync --ssh-dir /etc/ssh
 
 # Machine-readable JSON output
-ssh-bw sync --json
+bwforgectl sync --json
 ```
 
 **Flags:** `--ssh-dir DIR`, `--update`, `--yes`, `--no-derive`
@@ -115,10 +115,10 @@ ssh-bw sync --json
 List SSH keys and/or PGP notes stored in the vault.
 
 ```bash
-ssh-bw list --type ssh        # SSH keys only
-ssh-bw list --type pgp        # PGP notes only
-ssh-bw list --type all        # both (default)
-ssh-bw list --type ssh --json # JSON output
+bwforgectl list --type ssh        # SSH keys only
+bwforgectl list --type pgp        # PGP notes only
+bwforgectl list --type all        # both (default)
+bwforgectl list --type ssh --json # JSON output
 ```
 
 #### `output`
@@ -127,16 +127,16 @@ Write SSH keys or PGP notes to files or stdout.
 
 ```bash
 # Write to files
-ssh-bw output --type ssh --name id_ed25519 --out-dir ./export
+bwforgectl output --type ssh --name id_ed25519 --out-dir ./export
 
 # Print public key to stdout
-ssh-bw output --type ssh --name id_ed25519
+bwforgectl output --type ssh --name id_ed25519
 
 # Print both public and private keys
-ssh-bw output --type ssh --name id_ed25519 --show-private
+bwforgectl output --type ssh --name id_ed25519 --show-private
 
 # Dump PGP notes
-ssh-bw output --type pgp --out-dir ./export
+bwforgectl output --type pgp --out-dir ./export
 ```
 
 #### `delete`
@@ -144,10 +144,10 @@ ssh-bw output --type pgp --out-dir ./export
 Remove an SSH record from the vault.
 
 ```bash
-ssh-bw delete --name id_ed25519        # move to trash
-ssh-bw delete --id <item-id>           # by vault item ID
-ssh-bw delete --name id_ed25519 --permanent  # permanently delete
-ssh-bw delete --name id_ed25519 --yes  # skip confirmation
+bwforgectl delete --name id_ed25519        # move to trash
+bwforgectl delete --id <item-id>           # by vault item ID
+bwforgectl delete --name id_ed25519 --permanent  # permanently delete
+bwforgectl delete --name id_ed25519 --yes  # skip confirmation
 ```
 
 ## Credential storage
@@ -157,13 +157,13 @@ prompts) or persisted with `store-credentials`.
 
 - **OS keyring** (preferred): GNOME Keyring, KWallet, macOS Keychain, or
   Windows Credential Manager.  No plaintext data is written to disk.
-- **Encrypted file** (fallback): stored in `~/.config/ssh-bw/credentials.enc`,
+- **Encrypted file** (fallback): stored in `~/.config/bwforgectl/credentials.enc`,
   encrypted with AES-128 (Fernet) using a key derived via PBKDF2-HMAC-SHA256
   (390 000 iterations). The store passphrase is never saved.
 
 ## PGP notes
 
-`ssh-bw` can discover, list, and export PGP key material stored as Bitwarden
+`bwforgectl` can discover, list, and export PGP key material stored as Bitwarden
 secure notes. A note is considered a PGP note when its body begins with a PGP
 marker (`-----BEGIN PGP PRIVATE/PUBLIC KEY BLOCK-----`) or its name contains
 "pgp" or "gpg".

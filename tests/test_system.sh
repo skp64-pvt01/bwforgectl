@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# System-level test for ssh_bw that exercises the REAL Bitwarden CLI (`bw`).
+# System-level test for bwforgectl that exercises the REAL Bitwarden CLI (`bw`).
 #
 # Creates a temporary SSH key pair, imports it into the vault, lists, exports,
 # verifies, updates, and finally deletes it.
@@ -32,7 +32,7 @@ check() {
 }
 
 # ---- paths & temp dirs -------------------------------------------------------
-TMPDIR=$(mktemp -d /tmp/ssh-bw-system-test-XXXXXX)
+TMPDIR=$(mktemp -d /tmp/bwforgectl-system-test-XXXXXX)
 SSH_DIR="${TMPDIR}/dotssh"
 mkdir -p "$SSH_DIR"
 KEY_NAME="testkey_ed25519_$$"
@@ -101,25 +101,25 @@ AUTH="--store-passphrase ${STORE_PASSPHRASE} --no-keyring --use-stored"
 
 # ---- store credentials ---------------------------------------------------
 echo -e "${INFO}Storing credentials …${NC}"
-python -m ssh_bw ${GLOBAL} \
+python -m bw_forge_ctl ${GLOBAL} \
     store-credentials --email "$EMAIL" --password "$PASSWORD" ${AUTH}
 check "store-credentials via encrypted file" true
 
 # ---- import (sync) -------------------------------------------------------
 echo -e "${INFO}Importing SSH key …${NC}"
-PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     sync --ssh-dir "$SSH_DIR" --name-prefix "${PREFIX}" --update --yes ${AUTH}
 check "sync (import)" true
 
 # ---- list ----------------------------------------------------------------
 echo -e "${INFO}Listing vault items …${NC}"
-LIST_OUT=$(PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+LIST_OUT=$(PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     list --type ssh ${AUTH})
 check "list contains test key" \
     bash -c "echo '$LIST_OUT' | grep -q '${PREFIX}${KEY_NAME}'"
 
 # ---- list --json ---------------------------------------------------------
-LIST_JSON=$(PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+LIST_JSON=$(PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     list --type ssh --json ${AUTH})
 check "list --json parses" \
     python3 -c "
@@ -130,7 +130,7 @@ assert len(items)>=1
 " <<< "$LIST_JSON"
 
 # ---- output (export to files) --------------------------------------------
-PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     output --type ssh --name "${PREFIX}${KEY_NAME}" --out-dir "$OUT_DIR" ${AUTH}
 check "exported private key exists" test -f "${OUT_DIR}/${PREFIX}${KEY_NAME}"
 check "exported public key exists" test -f "${OUT_DIR}/${PREFIX}${KEY_NAME}.pub"
@@ -142,7 +142,7 @@ check "exported public key matches original" \
     diff "$PUB" "${OUT_DIR}/${PREFIX}${KEY_NAME}.pub"
 
 # ---- output to stdout ----------------------------------------------------
-STDOUT_OUT=$(PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+STDOUT_OUT=$(PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     output --type ssh --name "${PREFIX}${KEY_NAME}" --show-private ${AUTH})
 check "output shows public key via stdout" \
     bash -c "echo '$STDOUT_OUT' | grep -q 'ssh-ed25519'"
@@ -150,19 +150,19 @@ check "output shows private key via stdout" \
     bash -c "echo '$STDOUT_OUT' | grep -q 'BEGIN OPENSSH PRIVATE KEY'"
 
 # ---- sync again (should be unchanged) ------------------------------------
-SYNC2_OUT=$(PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+SYNC2_OUT=$(PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     sync --ssh-dir "$SSH_DIR" --name-prefix "${PREFIX}" --update --yes ${AUTH})
 check "re-sync reports unchanged" \
     bash -c "echo '$SYNC2_OUT' | grep -q 'unchanged'"
 
 # ---- delete --------------------------------------------------------------
-DELETE_OUT=$(PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+DELETE_OUT=$(PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     delete --name "${PREFIX}${KEY_NAME}" --yes --permanent ${AUTH})
 check "delete reports deleted" \
     bash -c "echo '$DELETE_OUT' | grep -q 'deleted'"
 
 # ---- verify deleted ------------------------------------------------------
-LIST_FINAL=$(PYTHONPATH="$ROOT" python -m ssh_bw ${GLOBAL} \
+LIST_FINAL=$(PYTHONPATH="$ROOT" python -m bw_forge_ctl ${GLOBAL} \
     list --type ssh ${AUTH})
 check "list after delete no longer contains test key" \
     bash -c "! echo '$LIST_FINAL' | grep -q '${PREFIX}${KEY_NAME}'"

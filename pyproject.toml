@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ssh-bw"
+name = "bwforgectl"
 version = "1.0.0"
-description = "Sync local SSH key pairs (and PGP notes) with a Bitwarden vault"
+description = "Manage SSH keys and Git credentials via Bitwarden vault"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -26,11 +26,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pilakkat1964/ssh-bw"
-Repository = "https://github.com/pilakkat1964/ssh-bw"
+Homepage = "https://github.com/skp64-pvt01/bwforgectl"
+Repository = "https://github.com/skp64-pvt01/bwforgectl"
 
 [project.scripts]
-ssh-bw = "ssh_bw.cli:main"
+bwforgectl = "bw_forge_ctl.cli:main"
+ssh-bw = "bw_forge_ctl.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["ssh_bw*"]
+include = ["bw_forge_ctl*"]

@@ -1,5 +1,5 @@
 #!/usr/bin/make -f
-export PYBUILD_NAME=ssh-bw
+export PYBUILD_NAME=bwforgectl
 # Use system Python (not pyenv shim) so setuptools is available.
 export PATH := /usr/bin:$(PATH)
 

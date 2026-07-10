@@ -1,9 +1,9 @@
-"""Tests for :mod:`ssh_bw.importer`."""
+"""Tests for :mod:`bw_forge_ctl.importer`."""
 
 from pathlib import Path
 
-from ssh_bw.bwclient import TYPE_SSH_KEY, BitwardenClient
-from ssh_bw.importer import Importer, _always_yes, _always_no, ACTION_CREATED, ACTION_UNCHANGED, ACTION_DECLINED, ACTION_UPDATED
+from bw_forge_ctl.bwclient import TYPE_SSH_KEY, BitwardenClient
+from bw_forge_ctl.importer import Importer, _always_yes, _always_no, ACTION_CREATED, ACTION_UNCHANGED, ACTION_DECLINED, ACTION_UPDATED
 
 # Re-use sample key material from conftest.
 ROOT = Path(__file__).resolve().parent.parent

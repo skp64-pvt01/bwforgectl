@@ -1,18 +1,21 @@
-"""Command-line interface for ssh-bw.
+"""Command-line interface for bwforgectl.
 
 Subcommand groups
 -----------------
-  ssh-bw credential store          Save Bitwarden credentials.
-  ssh-bw credential forget         Remove stored credentials.
-  ssh-bw host list                 List local SSH and GPG keys.
-  ssh-bw host search <query>       Fuzzy-search local keys by fingerprint or name.
-  ssh-bw vault list                List SSH / PGP keys in the Bitwarden vault.
-  ssh-bw vault search <query>      Fuzzy-search vault keys.
-  ssh-bw vault output              Export vault keys to files or stdout.
-  ssh-bw vault delete              Remove keys from the vault.
-  ssh-bw sync                      Bidirectional sync (interactive).
-  ssh-bw sync host                 Push local keys to vault.
-  ssh-bw sync vault                Pull vault keys to local disk.
+  bwforgectl credential store          Save Bitwarden credentials.
+  bwforgectl credential forget         Remove stored credentials.
+  bwforgectl host list                 List local SSH and GPG keys.
+  bwforgectl host search <query>       Fuzzy-search local keys by fingerprint or name.
+  bwforgectl vault list                List SSH / PGP keys in the Bitwarden vault.
+  bwforgectl vault search <query>      Fuzzy-search vault keys.
+  bwforgectl vault output              Export vault keys to files or stdout.
+  bwforgectl vault delete              Remove keys from the vault.
+  bwforgectl account create            Create a new git account (key + BW items).
+  bwforgectl account verify            Verify git accounts via SSH auth.
+  bwforgectl audit vault               Audit vault for consistency issues.
+  bwforgectl sync                      Bidirectional sync (interactive).
+  bwforgectl sync host                 Push local keys to vault.
+  bwforgectl sync vault                Pull vault keys to local disk.
 """
 
 from __future__ import annotations
@@ -27,6 +30,16 @@ from typing import Optional
 
 from .bwclient import TYPE_SSH_KEY, BitwardenClient, BitwardenError
 from .credentials import CredentialError, Credentials, CredentialStore
+from .gitacct import (
+    AccountVerification,
+    audit_git_vault,
+    create_git_account,
+    load_git_logins,
+    load_git_ssh_keys,
+    parse_git_login_name,
+    try_ssh_auth,
+    ssh_host_for_account,
+)
 from .hostscan import (
     HostKeyEntry,
     format_table,
@@ -67,13 +80,13 @@ def _progress(msg: str, verbose: int = 1, level: int = 1) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Full help text (shown for bare `ssh-bw` or `ssh-bw -h`)
+# Full help text (shown for bare `bwforgectl` or `bwforgectl -h`)
 # --------------------------------------------------------------------------- #
 
-FULL_HELP = r"""ssh-bw — Sync local SSH key pairs (and PGP notes) with a Bitwarden vault.
+FULL_HELP = r"""bwforgectl — Sync local SSH key pairs (and PGP notes) with a Bitwarden vault.
 
 Usage:
-  ssh-bw [GLOBAL-OPTS] <group> <command> [AUTH-OPTS] [CMD-OPTS]
+  bwforgectl [GLOBAL-OPTS] <group> <command> [AUTH-OPTS] [CMD-OPTS]
 
 Global options (appear before the group):
   --bw-path PATH      Path to the bw executable (env: BW_PATH, default: bw).
@@ -91,7 +104,7 @@ credential commands):
   --use-stored        Load credentials from the OS keyring or encrypted file.
   --store-passphrase PASS  Passphrase for the encrypted credential store
                            (env: BW_STORE_PASSPHRASE).
-  --config-dir DIR    Credential store directory (default: ~/.config/ssh-bw).
+  --config-dir DIR    Credential store directory (default: ~/.config/bwforgectl).
   --no-keyring        Force encrypted-file backend (ignore OS keyring).
   --name-prefix PREFIX  Prefix for vault item names (default: 'SSH: ').
 
@@ -106,14 +119,14 @@ Groups & Commands
   CREDENTIAL — manage stored Bitwarden credentials
   ──────────────────────────────────────────────────
 
-    ssh-bw credential store
+    bwforgectl credential store
         Save your Bitwarden email and password to the OS keyring (or an
         encrypted file).  You will be prompted for any missing values.
 
         Options: --email, --password, --store-passphrase, --config-dir,
                  --no-keyring
 
-    ssh-bw credential forget
+    bwforgectl credential forget
         Remove previously stored credentials.
 
         Options: --config-dir, --no-keyring
@@ -121,7 +134,7 @@ Groups & Commands
    HOST — inspect local keys
    ──────────────────────────
 
-     ssh-bw host list
+     bwforgectl host list
          List SSH and GPG keys found on this machine.
          Shows SHA256 fingerprints by default.
 
@@ -131,7 +144,7 @@ Groups & Commands
            --md5        Show MD5 fingerprints instead of SHA256.
            --json       Emit machine-readable JSON.
 
-     ssh-bw host search <query>
+     bwforgectl host search <query>
          Fuzzy-search local keys by fingerprint (SHA256 by default) or name.
          Matches are case-insensitive and ignore colons / spaces / prefixes.
 
@@ -143,7 +156,7 @@ Groups & Commands
   VAULT — inspect and manage vault keys
   ──────────────────────────────────────
 
-    ssh-bw vault list
+    bwforgectl vault list
         List SSH keys and/or PGP notes stored in the Bitwarden vault.
 
         Options:
@@ -152,7 +165,7 @@ Groups & Commands
           --json       Emit machine-readable JSON.
           (plus authentication options)
 
-    ssh-bw vault search <query>
+    bwforgectl vault search <query>
         Fuzzy-search vault SSH keys by fingerprint or name.
 
         Options:
@@ -161,7 +174,7 @@ Groups & Commands
           --json       Emit machine-readable JSON.
           (plus authentication options)
 
-    ssh-bw vault output --name <name> [--out-dir <dir>]
+    bwforgectl vault output --name <name> [--out-dir <dir>]
         Export SSH keys or PGP notes from the vault to files or stdout.
 
         Options:
@@ -171,7 +184,7 @@ Groups & Commands
           --show-private       Include the private key in stdout output.
           (plus authentication options)
 
-    ssh-bw vault delete --name <name> [--id <id>]
+    bwforgectl vault delete --name <name> [--id <id>]
         Remove an SSH key record from the vault (soft-delete by default).
 
         Options:
@@ -181,19 +194,65 @@ Groups & Commands
           --yes            Skip the interactive confirmation prompt.
           (plus authentication options)
 
-  SYNC — synchronise local keys with the vault
-  ─────────────────────────────────────────────
+   ACCOUNT — create and verify git accounts
+   ─────────────────────────────────────────
 
-    ssh-bw sync
+     bwforgectl account create --platform <github|gitlab> --account-name <name> --email <email>
+         Create a new git account: generate an SSH key, create Bitwarden
+         login + SSH key items, and print the SSH config stanza.
+
+         Options:
+           --platform {github,gitlab}  Git platform (required).
+           --account-name NAME         Account name, e.g. 'skp1964-dev' (required).
+           --email EMAIL               Registered email (required).
+           --username USER             Git platform username (default: email).
+           --password PASS             Account password (stored in BW login).
+           --totp KEY                  TOTP key (stored in BW login).
+           --key-type {ed25519,rsa}   SSH key type (default: ed25519).
+           --ssh-dir DIR               Directory for generated SSH key.
+           --no-login                  Skip creating the BW login item.
+           --no-ssh-key                Skip creating the BW SSH key item.
+           --dry-run                   Report what would be done.
+           (plus authentication options)
+
+     bwforgectl account verify [--platform <p>] [--account-name <name>]
+         Verify git accounts by testing SSH authentication against their
+         configured hosts.  Cross-references BW login items with SSH keys.
+
+         Options:
+           --platform {github,gitlab}  Filter by platform.
+           --account-name NAME         Filter by account name (substring).
+           --json                      Emit machine-readable JSON.
+           (plus authentication options)
+
+   AUDIT — audit vault consistency
+   ─────────────────────────────────
+
+     bwforgectl audit vault
+         Check the Bitwarden vault for consistency issues:
+           • Duplicate login or SSH key items
+           • Missing fields (passwords, key material)
+           • Orphan logins without matching SSH keys
+           • Orphan SSH keys without matching logins
+           • Naming convention compliance
+
+         Options:
+           --json  Emit machine-readable JSON.
+           (plus authentication options)
+
+   SYNC — synchronise local keys with the vault
+   ─────────────────────────────────────────────
+
+    bwforgectl sync
         Bidirectional sync — push new local keys to the vault and pull
         vault-only keys to disk.  Conflicts are resolved interactively.
 
-    ssh-bw sync host
+    bwforgectl sync host
         Push local SSH keys to the vault (host → vault).
         Only keys in ~/.ssh that are new or changed are uploaded.
         Without --yes, you are prompted before each update.
 
-    ssh-bw sync vault
+    bwforgectl sync vault
         Pull SSH keys from the vault to the local disk (vault → host).
         Only keys that are new or changed on disk are written.
         Without --yes, you are prompted before each overwrite.
@@ -208,41 +267,51 @@ Groups & Commands
 Examples
 ───────────────────────────────────────────────────────────────────────────────
 
-  ssh-bw credential store --email you@example.com
+  bwforgectl credential store --email you@example.com
       Save credentials for later use.
 
-  ssh-bw host list
+  bwforgectl host list
       Show all SSH and GPG keys on this machine.
 
-   ssh-bw host search "SHA256:abc123"
+   bwforgectl host search "SHA256:abc123"
        Find a local key by its SHA256 fingerprint (default).
 
-   ssh-bw host search --md5 "MD5:aa:bb:cc"
+   bwforgectl host search --md5 "MD5:aa:bb:cc"
        Find a local SSH key by its MD5 fingerprint.
 
-   ssh-bw host list --md5
+   bwforgectl host list --md5
        List local keys showing MD5 fingerprints instead of SHA256.
 
-  ssh-bw vault list --ssh
+  bwforgectl vault list --ssh
       List every SSH key stored in the vault.
 
-  ssh-bw vault search "ed25519"
+  bwforgectl vault search "ed25519"
       Fuzzy-search vault keys matching 'ed25519'.
 
-  ssh-bw vault output --name github --out-dir ./export
+  bwforgectl vault output --name github --out-dir ./export
       Extract a specific vault key to files.
 
-  ssh-bw vault delete --name old-key --yes
+  bwforgectl vault delete --name old-key --yes
       Remove an SSH key record from the vault without confirmation.
 
-  ssh-bw sync --dry-run
+  bwforgectl sync --dry-run
       Preview bidirectional sync without making changes.
 
-  ssh-bw sync host --yes
-      Push all local keys to the vault, auto-confirming changes.
+   bwforgectl sync host --yes
+       Push all local keys to the vault, auto-confirming changes.
 
-  ssh-bw sync vault --yes
-      Pull all vault keys to local disk, auto-confirming overwrites.
+   bwforgectl sync vault --yes
+       Pull all vault keys to local disk, auto-confirming overwrites.
+
+   bwforgectl account create --platform github --account-name my-new-acct --email me@example.com
+       Generate SSH key, create BW login + SSH key items for a new GitHub
+       account.
+
+   bwforgectl account verify
+       Test SSH authentication for all git accounts in the vault.
+
+   bwforgectl audit vault
+       Run a full consistency audit of git accounts in the vault.
 """
 
 
@@ -846,6 +915,232 @@ def cmd_sync_vault(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Account commands
+# --------------------------------------------------------------------------- #
+
+
+def cmd_account_create(args: argparse.Namespace) -> int:
+    """Create a new git account: generate SSH key + create BW items."""
+    platform = args.platform
+    account_name = args.account_name
+    email = args.email
+    verbose = _verbose_level(args)
+
+    if not email:
+        print("error: --email is required", file=sys.stderr)
+        return 1
+    if not account_name:
+        print("error: --account-name is required", file=sys.stderr)
+        return 1
+
+    client = _make_client(args)
+    try:
+        if not _no_sync(args):
+            client.sync()
+
+        _progress(f"  creating {platform} account '{account_name}' …", verbose)
+
+        result = create_git_account(
+            client,
+            platform=platform,
+            account_name=account_name,
+            email=email,
+            username=args.username or "",
+            password=args.password or "",
+            totp=args.totp or "",
+            key_type=args.key_type,
+            ssh_dir=args.ssh_dir,
+            skip_login=args.no_login,
+            skip_ssh_key=args.no_ssh_key,
+            dry_run=args.dry_run,
+        )
+
+        if result.errors:
+            for err in result.errors:
+                print(f"error: {err}", file=sys.stderr)
+            return 1
+
+        if args.dry_run:
+            key_name = f"id_ed25519-{email}"
+            print(f"[dry-run] Would generate SSH key:  {key_name}")
+            if not args.no_login:
+                print(f"[dry-run] Would create login item: git: {platform}: {account_name}")
+            if not args.no_ssh_key:
+                print(f"[dry-run] Would create SSH key item: {key_name}")
+            return 0
+
+        print(f"\n  Account:       {platform}/{account_name}")
+        print(f"  Email:         {email}")
+        print(f"  SSH key:       {result.key_name}")
+        print(f"  Fingerprint:   {result.key_fingerprint}")
+        print(f"  Login item:    git: {platform}: {account_name}  (id: {result.login_item_id or 'skipped'})")
+        print(f"  SSH key item:  {result.key_name}  (id: {result.ssh_key_item_id or 'skipped'})")
+        print()
+        print(f"  Public key to register on {platform}:")
+        print(f"    {result.public_key}")
+        print()
+        print(f"  Add to ~/.ssh/config:")
+        print(result.config_stanza)
+
+    finally:
+        client.stop_serve()
+
+    return 0
+
+
+def cmd_account_verify(args: argparse.Namespace) -> int:
+    """Verify git accounts by testing SSH authentication."""
+    verbose = _verbose_level(args)
+
+    client = _make_client(args)
+    try:
+        if not _no_sync(args):
+            client.sync()
+
+        _progress("  loading git login items from vault …", verbose)
+        logins = load_git_logins(client)
+        ssh_keys = load_git_ssh_keys(client)
+
+        if not logins:
+            print("No git login items found in vault.")
+            return 0
+
+        results: List[AccountVerification] = []
+
+        for item in logins:
+            name = str(item.get("name", ""))
+            parsed = parse_git_login_name(name)
+            if not parsed:
+                continue
+
+            platform = parsed["platform"]
+            account_name = parsed["account_name"]
+            login = item.get("login") or {}
+            email = login.get("username", "")
+
+            # Find matching SSH key
+            matching_keys = [
+                k for k in ssh_keys
+                if account_name.lower() in k.name.lower()
+                or email.lower() in k.name.lower()
+            ]
+
+            # Filter by --platform / --account-name
+            if args.platform and args.platform.lower() != platform.lower():
+                continue
+            if args.account_name and args.account_name.lower() not in account_name.lower():
+                continue
+
+            ssh_key_name = matching_keys[0].name if matching_keys else "(none)"
+            ssh_host = ssh_host_for_account(platform, account_name)
+
+            ver = AccountVerification(
+                platform=platform,
+                account_name=account_name,
+                email=email,
+                ssh_key_name=ssh_key_name,
+                ssh_host=ssh_host,
+            )
+
+            if matching_keys:
+                _progress(f"  testing SSH auth for {platform}/{account_name} → {ssh_host} …", verbose)
+                ok, detail = try_ssh_auth(ssh_host)
+                ver.auth_ok = ok
+                if not ok:
+                    ver.error = detail
+            else:
+                ver.auth_ok = None
+                ver.error = "No matching SSH key in vault"
+
+            results.append(ver)
+
+        if not results:
+            print("No matching accounts found.")
+            return 1
+
+        if args.json:
+            print(json.dumps([
+                {
+                    "platform": r.platform,
+                    "account_name": r.account_name,
+                    "email": r.email,
+                    "ssh_key_name": r.ssh_key_name,
+                    "ssh_host": r.ssh_host,
+                    "auth_ok": r.auth_ok,
+                    "error": r.error,
+                }
+                for r in results
+            ], indent=2))
+            return 0
+
+        for r in results:
+            status = "✅" if r.auth_ok else ("❌" if r.auth_ok is False else "⚠️")
+            print(f"  {status}  {r.platform:8s} {r.account_name:<24s} {r.email:<30s}  {r.ssh_key_name}")
+            if r.error:
+                print(f"          {r.error}")
+
+    finally:
+        client.stop_serve()
+
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Audit commands
+# --------------------------------------------------------------------------- #
+
+
+def cmd_audit_vault(args: argparse.Namespace) -> int:
+    """Audit the Bitwarden vault for git account consistency."""
+    verbose = _verbose_level(args)
+
+    client = _make_client(args)
+    try:
+        if not _no_sync(args):
+            client.sync()
+
+        _progress("  auditing vault …", verbose)
+        report = audit_git_vault(client)
+
+        if args.json:
+            print(json.dumps([
+                {
+                    "severity": f.severity,
+                    "category": f.category,
+                    "message": f.message,
+                    "item_id": f.item_id,
+                    "item_name": f.item_name,
+                    "detail": f.detail,
+                }
+                for f in report.findings
+            ], indent=2))
+            return 0
+
+        if report.total == 0:
+            print("No issues found. Vault is consistent.")
+            return 0
+
+        for severity, label in [("error", "ERRORS"), ("warning", "WARNINGS"), ("info", "INFO")]:
+            items = [f for f in report.findings if f.severity == severity]
+            if not items:
+                continue
+            print(f"\n{label} ({len(items)}):")
+            print("─" * 60)
+            for f in items:
+                tag = f.item_name or f.item_id or ""
+                print(f"  [{f.category}] {f.message}")
+                if tag:
+                    print(f"           item: {tag}")
+
+        print(f"\nTotal: {report.total} finding(s) — {len(report.errors)} error(s), {len(report.warnings)} warning(s), {len(report.infos)} info(s)")
+
+    finally:
+        client.stop_serve()
+
+    return 1 if report.errors else 0
+
+
+# --------------------------------------------------------------------------- #
 # Argument parser
 # --------------------------------------------------------------------------- #
 
@@ -872,7 +1167,7 @@ def _add_auth_args(parser: argparse.ArgumentParser) -> None:
     )
     g.add_argument(
         "--config-dir",
-        help="Credential store directory (default: ~/.config/ssh-bw).",
+        help="Credential store directory (default: ~/.config/bwforgectl).",
     )
     g.add_argument(
         "--no-keyring",
@@ -910,7 +1205,7 @@ def _add_sync_opts(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ssh-bw",
+        prog="bwforgectl",
         description="Sync local SSH key pairs (and PGP notes) with a Bitwarden vault.",
         add_help=False,  # we handle help ourselves
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1034,6 +1329,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_vault_delete.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
     p_vault_delete.set_defaults(func=cmd_vault_delete)
 
+    # === account ===
+    p_acct = sub.add_parser("account", help="Create and verify git accounts.")
+    acct_sub = p_acct.add_subparsers(dest="acct_cmd")
+
+    p_acct_create = acct_sub.add_parser("create", help="Create a new git account with SSH key + vault items.")
+    _add_auth_args(p_acct_create)
+    p_acct_create.add_argument("--platform", required=True, choices=["github", "gitlab"], help="Git platform.")
+    p_acct_create.add_argument("--account-name", required=True, help="Account name (e.g., skp1964-dev).")
+    p_acct_create.add_argument("--email", required=True, help="Registered email for the account.")
+    p_acct_create.add_argument("--username", help="Git platform username (defaults to email).")
+    p_acct_create.add_argument("--password", help="Account password (stored in BW login).")
+    p_acct_create.add_argument("--totp", help="TOTP key (stored in BW login).")
+    p_acct_create.add_argument("--key-type", choices=["ed25519", "rsa"], default="ed25519", help="SSH key type (default: ed25519).")
+    p_acct_create.add_argument("--ssh-dir", help="SSH key directory (default: ~/.ssh).")
+    p_acct_create.add_argument("--no-login", action="store_true", help="Skip creating login item.")
+    p_acct_create.add_argument("--no-ssh-key", action="store_true", help="Skip creating SSH key item.")
+    p_acct_create.add_argument("--dry-run", action="store_true", help="Report what would be done.")
+    p_acct_create.set_defaults(func=cmd_account_create)
+
+    p_acct_verify = acct_sub.add_parser("verify", help="Verify git accounts via SSH authentication.")
+    _add_auth_args(p_acct_verify)
+    p_acct_verify.add_argument("--platform", choices=["github", "gitlab"], help="Filter by platform.")
+    p_acct_verify.add_argument("--account-name", help="Filter by account name (substring match).")
+    p_acct_verify.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_acct_verify.set_defaults(func=cmd_account_verify)
+
+    # === audit ===
+    p_audit = sub.add_parser("audit", help="Audit vault consistency for git accounts.")
+    audit_sub = p_audit.add_subparsers(dest="audit_cmd")
+
+    p_audit_vault = audit_sub.add_parser("vault", help="Audit Bitwarden vault for consistency issues.")
+    _add_auth_args(p_audit_vault)
+    p_audit_vault.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_audit_vault.set_defaults(func=cmd_audit_vault)
+
     # === sync ===
     p_sync = sub.add_parser("sync", help="Synchronise local keys with the vault.")
     sync_sub = p_sync.add_subparsers(dest="sync_cmd")
@@ -1091,6 +1421,14 @@ def main(argv: Optional[list] = None) -> int:
     if args.group == "vault" and not getattr(args, "vault_cmd", None):
         parser.print_help()
         print("\nerror: missing vault subcommand (list, search, output, or delete)", file=sys.stderr)
+        return 1
+    if args.group == "account" and not getattr(args, "acct_cmd", None):
+        parser.print_help()
+        print("\nerror: missing account subcommand (create or verify)", file=sys.stderr)
+        return 1
+    if args.group == "audit" and not getattr(args, "audit_cmd", None):
+        parser.print_help()
+        print("\nerror: missing audit subcommand (vault)", file=sys.stderr)
         return 1
 
     if not hasattr(args, "func"):

@@ -1,18 +1,19 @@
 from setuptools import find_packages, setup
 
 setup(
-    name="ssh-bw",
+    name="bwforgectl",
     version="1.0.0",
-    description="Sync local SSH key pairs (and PGP notes) with a Bitwarden vault",
+    description="Manage SSH keys and Git credentials via Bitwarden vault",
     author="pilakkat1964",
     author_email="pilakkat1964@gmail.com",
     license="MIT",
-    packages=find_packages(include=["ssh_bw", "ssh_bw.*"]),
+    packages=find_packages(include=["bw_forge_ctl", "bw_forge_ctl.*"]),
     python_requires=">=3.10",
     install_requires=["cryptography>=41"],
     entry_points={
         "console_scripts": [
-            "ssh-bw=ssh_bw.cli:main",
+            "bwforgectl=bw_forge_ctl.cli:main",
+            "ssh-bw=bw_forge_ctl.cli:main",
         ],
     },
     classifiers=[

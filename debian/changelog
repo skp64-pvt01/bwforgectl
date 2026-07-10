@@ -1,4 +1,4 @@
-ssh-bw (1.0.0-1) noble; urgency=medium
+bwforgectl (1.0.0-1) noble; urgency=medium
 
   * Initial release.
   * Sync local SSH key pairs with a Bitwarden vault.
