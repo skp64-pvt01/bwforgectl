@@ -1958,6 +1958,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Push local GPG keys from GnuPG keyring to vault as secure notes.",
     )
     _add_auth_args(p_sync_gpg_host)
+    p_sync_gpg_host.add_argument("--yes", action="store_true",
+                                 help="Auto-confirm all changes (non-interactive).")
     p_sync_gpg_host.add_argument("--dry-run", action="store_true", help="Report what would change.")
     p_sync_gpg_host.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     p_sync_gpg_host.set_defaults(func=cmd_sync_gpg_host)
@@ -1969,6 +1971,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_auth_args(p_sync_gpg_vault)
     p_sync_gpg_vault.add_argument("--gpg-dir", help="Directory for .asc files (default: ~/.ssh).")
+    p_sync_gpg_vault.add_argument("--yes", action="store_true",
+                                  help="Auto-confirm all changes (non-interactive).")
     p_sync_gpg_vault.add_argument("--dry-run", action="store_true", help="Report what would change.")
     p_sync_gpg_vault.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     p_sync_gpg_vault.set_defaults(func=cmd_sync_gpg_vault)
