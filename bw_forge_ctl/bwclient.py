@@ -326,10 +326,27 @@ class BitwardenClient:
         self.session = None
         self._progress("  vault locked")
 
-    def sync(self) -> None:
-        self._progress("  syncing vault with server …")
-        self._run(["sync"], timeout=120.0)
-        self._progress("  sync complete")
+    def sync(self, *, retries: int = 3) -> None:
+        """Sync vault with server, retrying on transient network failures."""
+        last_error: Optional[BitwardenError] = None
+        for attempt in range(retries + 1):
+            self._progress("  syncing vault with server …")
+            try:
+                self._run(["sync"], timeout=120.0)
+                self._progress("  sync complete")
+                return
+            except BitwardenError as exc:
+                last_error = exc
+                msg = str(exc)
+                if not self._is_network_timed_out(msg):
+                    raise
+                if attempt < retries:
+                    delay = (attempt + 1) ** 2  # 1, 4, 9 …
+                    self._progress(
+                        f"  sync failed (network issue), retrying in {delay}s …"
+                    )
+                    time.sleep(delay)
+        raise last_error  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------ #
     # bw serve (REST) lifecycle
