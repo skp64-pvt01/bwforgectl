@@ -2,24 +2,29 @@
 
 Subcommand groups
 -----------------
-  bwforgectl credential store          Save Bitwarden credentials.
-  bwforgectl credential forget         Remove stored credentials.
-  bwforgectl host list                 List local SSH and GPG keys.
-  bwforgectl host search <query>       Fuzzy-search local keys by fingerprint or name.
-  bwforgectl vault list                List SSH / PGP keys in the Bitwarden vault.
-  bwforgectl vault search <query>      Fuzzy-search vault keys.
-  bwforgectl vault output              Export vault keys to files or stdout.
-  bwforgectl vault delete              Remove keys from the vault.
-  bwforgectl account create            Create a new git account (key + BW items).
-  bwforgectl account verify            Verify git accounts via SSH auth.
-  bwforgectl audit vault               Audit vault for consistency issues.
-  bwforgectl config list               List Host stanzas in ~/.ssh/config.
-  bwforgectl config show <host>        Show a specific Host stanza.
-  bwforgectl config install            Add or update a Host stanza.
-  bwforgectl config remove <host>      Remove a Host stanza.
-  bwforgectl sync                      Bidirectional sync (interactive).
-  bwforgectl sync host                 Push local keys to vault.
-  bwforgectl sync vault                Pull vault keys to local disk.
+  bwforgectl credential store              Save Bitwarden credentials.
+  bwforgectl credential forget             Remove stored credentials.
+  bwforgectl host list                     List local SSH and GPG keys.
+  bwforgectl host search <query>           Fuzzy-search local keys by fingerprint or name.
+  bwforgectl vault list                    List SSH / PGP keys in the Bitwarden vault.
+  bwforgectl vault search <query>          Fuzzy-search vault keys.
+  bwforgectl vault output                  Export vault keys to files or stdout.
+  bwforgectl vault delete                  Remove keys from the vault.
+  bwforgectl account create                Create a new git account (key + BW items).
+  bwforgectl account verify                Verify git accounts via SSH auth.
+  bwforgectl audit vault                   Audit vault for consistency issues.
+  bwforgectl config list                   List Host stanzas in ~/.ssh/config.
+  bwforgectl config show <host>            Show a specific Host stanza.
+  bwforgectl config install                Add or update a Host stanza.
+  bwforgectl config remove <host>          Remove a Host stanza.
+  bwforgectl key upload-ssh                Upload SSH key to GitHub/GitLab.
+  bwforgectl key upload-gpg                Upload GPG key to GitHub/GitLab.
+  bwforgectl key generate-gpg              Generate new GPG key pair.
+  bwforgectl sync                          Bidirectional sync (interactive).
+  bwforgectl sync host                     Push local SSH keys to vault.
+  bwforgectl sync vault                    Pull vault SSH keys to local disk.
+  bwforgectl sync gpg-host                 Push local GPG keys to vault.
+  bwforgectl sync gpg-vault                Pull vault GPG keys to .asc files.
 """
 
 from __future__ import annotations
@@ -102,7 +107,12 @@ def _progress(msg: str, verbose: int = 1, level: int = 1) -> None:
 # Full help text (shown for bare `bwforgectl` or `bwforgectl -h`)
 # --------------------------------------------------------------------------- #
 
-FULL_HELP = r"""bwforgectl — Sync local SSH key pairs (and PGP notes) with a Bitwarden vault.
+FULL_HELP = r"""bwforgectl — SSH ↔ Bitwarden vault sync, forge (GitHub/GitLab) account
+  lifecycle, SSH config management, and GPG key management.
+
+  Manage SSH key pairs, GPG keys, and Git (GitHub/GitLab) credentials through
+  a Bitwarden vault — a single source of truth for cryptographic keys and
+  git account configuration, accessible from any device.
 
 Usage:
   bwforgectl [GLOBAL-OPTS] <group> <command> [AUTH-OPTS] [CMD-OPTS]
@@ -259,28 +269,107 @@ Groups & Commands
            --json  Emit machine-readable JSON.
            (plus authentication options)
 
+   CONFIG — manage SSH config host stanzas
+   ────────────────────────────────────────
+
+     bwforgectl config list
+         List all Host stanzas in ~/.ssh/config.
+
+     bwforgectl config show <host>
+         Show a specific Host stanza by alias (e.g.
+         'github.myaccount.com').
+
+     bwforgectl config install --host <host> --user <user> [--identity-file <path>]
+         Add or update a Host stanza in ~/.ssh/config.  Follows project
+         naming conventions (github.<account>.com, gitlab.<account>.com).
+
+         Options:
+           --host HOST           SSH host alias (required).
+           --user USER           Remote user, typically 'git' (required).
+           --hostname HOSTNAME   Actual hostname (default: inferred from alias).
+           --identity-file PATH  Path to the SSH private key.
+           --port PORT           Non-standard SSH port.
+           --add-keys-to-agent   Include AddKeysToAgent yes (default: on).
+
+     bwforgectl config remove <host>
+         Remove a Host stanza from ~/.ssh/config.
+
+   KEY — manage keys on forge platforms (GitHub / GitLab)
+   ───────────────────────────────────────────────────────
+
+     bwforgectl key upload-ssh --platform <p> --key-file <path> [--title <t>]
+         Upload an SSH public key to a forge platform.  Detects duplicates
+         and can replace existing keys with --replace.
+
+         Options:
+           --platform {github,gitlab}       Forge platform (required).
+           --key-file PATH                  Path to the SSH public key (required).
+           --title TITLE                    Key title on the platform.
+           --account-name NAME              Account name (for token resolution).
+           --token TOKEN                    Forge API token (env: FORGE_TOKEN).
+           --replace                        Replace existing key with same fingerprint.
+
+     bwforgectl key upload-gpg --platform <p> --key-file <path>
+         Upload an armored GPG public key (.asc) to a forge platform.
+         Detects duplicates and can replace with --replace.
+
+         Options:
+           --platform {github,gitlab}       Forge platform (required).
+           --key-file PATH                  Path to armored GPG public key (required).
+           --title TITLE                    Key title on the platform.
+           --account-name NAME              For token resolution.
+           --token TOKEN                    Forge API token (env: FORGE_TOKEN).
+           --replace                        Replace existing key.
+
+     bwforgectl key generate-gpg --email <email> [--name <name>]
+         Generate a new GPG key pair.  Optionally store in Bitwarden vault
+         as a secure note and/or upload to a forge platform in one step.
+
+         Options:
+           --email EMAIL      Email for the GPG key (required).
+           --name NAME        Real name (default: email).
+           --key-type TYPE    'ed25519' (default) or 'rsa4096'.
+           --store            Save the private key in Bitwarden vault.
+           --upload PLATFORM  Also upload to {github,gitlab}.
+           --token TOKEN      Forge API token for upload.
+           --replace          Replace existing GPG key on the platform.
+
    SYNC — synchronise local keys with the vault
    ─────────────────────────────────────────────
 
-    bwforgectl sync
-        Bidirectional sync — push new local keys to the vault and pull
-        vault-only keys to disk.  Conflicts are resolved interactively.
+     bwforgectl sync
+         Bidirectional sync — push new local SSH keys to the vault and pull
+         vault-only SSH keys to disk.  Conflicts are resolved interactively.
 
-    bwforgectl sync host
-        Push local SSH keys to the vault (host → vault).
-        Only keys in ~/.ssh that are new or changed are uploaded.
-        Without --yes, you are prompted before each update.
+     bwforgectl sync host
+         Push local SSH keys to the vault (host → vault).
+         Only keys in ~/.ssh that are new or changed are uploaded.
+         Without --yes, you are prompted before each update.
 
-    bwforgectl sync vault
-        Pull SSH keys from the vault to the local disk (vault → host).
-        Only keys that are new or changed on disk are written.
-        Without --yes, you are prompted before each overwrite.
+     bwforgectl sync vault
+         Pull SSH keys from the vault to the local disk (vault → host).
+         Only keys that are new or changed on disk are written.
+         Without --yes, you are prompted before each overwrite.
 
-        Options:
-          --ssh-dir DIR     Directory for local keys (default: ~/.ssh).
-          --yes             Auto-confirm all changes (non-interactive).
-          --dry-run         Report what would change without applying it.
-          (plus authentication options)
+         Options:
+           --ssh-dir DIR     Directory for local keys (default: ~/.ssh).
+           --yes             Auto-confirm all changes (non-interactive).
+           --dry-run         Report what would change without applying it.
+           (plus authentication options)
+
+     bwforgectl sync gpg-host
+         Push local GPG keys from your GnuPG keyring to the Bitwarden vault
+         as secure notes (host → vault).
+
+     bwforgectl sync gpg-vault
+         Pull GPG keys from Bitwarden secure notes to local .asc files
+         (vault → host).
+
+         Options:
+           --gpg-dir DIR     Output directory for .asc files (default: ~/.ssh/gpg).
+           --yes             Auto-confirm all changes (non-interactive).
+           --dry-run         Report what would change without applying it.
+           (plus authentication options)
 
 ───────────────────────────────────────────────────────────────────────────────
 Examples
@@ -324,13 +413,47 @@ Examples
 
    bwforgectl account create --platform github --account-name my-new-acct --email me@example.com
        Generate SSH key, create BW login + SSH key items for a new GitHub
-       account.
+       account, and optionally install the SSH config stanza.
+
+   bwforgectl account create --platform github --account-name my-new-acct --email me@example.com --install-config
+       Same as above but also add the Host stanza to ~/.ssh/config automatically.
 
    bwforgectl account verify
        Test SSH authentication for all git accounts in the vault.
 
+   bwforgectl account verify --platform gitlab --account-name myacct
+       Verify a specific account on a specific platform.
+
    bwforgectl audit vault
        Run a full consistency audit of git accounts in the vault.
+
+   bwforgectl config list
+       Show all Host stanzas in ~/.ssh/config.
+
+   bwforgectl config show gitlab.myaccount.com
+       Display details of a specific Host stanza.
+
+   bwforgectl config install --host github.my-new-acct.com --user git --identity-file ~/.ssh/id_ed25519-my-new-acct
+       Add or update a Host stanza for a git account.
+
+   bwforgectl config remove github.old-account.com
+       Remove a Host stanza.
+
+   bwforgectl key upload-ssh --platform github --key-file ~/.ssh/id_ed25519-me.pub
+       Upload an SSH public key to GitHub.
+
+   bwforgectl key upload-gpg --platform gitlab --key-file ./pubkey.asc --replace
+       Upload a GPG public key to GitLab, replacing any existing key.
+
+   bwforgectl key generate-gpg --email me@example.com --store --upload github
+       Generate a GPG key, store the private key in the vault, and upload
+       the public key to GitHub in one step.
+
+   bwforgectl sync gpg-host --dry-run
+       Preview which local GPG keys would be pushed to the vault.
+
+   bwforgectl sync gpg-vault --yes
+       Pull all vault GPG keys to local .asc files, auto-confirming.
 """
 
 
@@ -1827,7 +1950,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # sync gpg-host
     p_sync_gpg_host = sync_sub.add_parser(
-        "gpg-host", help="Push local GPG keys to the vault (host → vault).",
+        "gpg-host",
+        help="Push local GPG keys from GnuPG keyring to vault as secure notes.",
     )
     _add_auth_args(p_sync_gpg_host)
     p_sync_gpg_host.add_argument("--dry-run", action="store_true", help="Report what would change.")
@@ -1836,7 +1960,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # sync gpg-vault
     p_sync_gpg_vault = sync_sub.add_parser(
-        "gpg-vault", help="Pull GPG keys from vault to .asc files.",
+        "gpg-vault",
+        help="Pull GPG keys from vault secure notes to local .asc files.",
     )
     _add_auth_args(p_sync_gpg_vault)
     p_sync_gpg_vault.add_argument("--gpg-dir", help="Directory for .asc files (default: ~/.ssh).")

@@ -29,12 +29,25 @@ TYPE_SSH_KEY = 5
 
 
 def _clean_bw_error(detail: str) -> str:
-    """Strip raw Node.js stacktraces from bw CLI error output."""
+    """Strip raw Node.js stacktraces and FetchError noise from bw CLI error output."""
     if not detail:
         return detail
-    # Keep only the first meaningful line before any stacktrace.
     lines = detail.split("\n")
     cleaned: List[str] = []
+    lines_to_skip = {
+        "triggerUncaughtException",
+        "type: 'system'",
+        "errno: 'ETIMEDOUT'",
+        "errno: 'ECONNREFUSED'",
+        "errno: 'ENOTFOUND'",
+        "errno: 'ECONNRESET'",
+        "code: 'ETIMEDOUT'",
+        "code: 'ECONNREFUSED'",
+        "code: 'ENOTFOUND'",
+        "code: 'ECONNRESET'",
+        "code: 'ERR_UNHANDLED_REJECTION'",
+        "error: 'ERR_UNHANDLED_REJECTION'",
+    }
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -46,11 +59,14 @@ def _clean_bw_error(detail: str) -> str:
             continue
         if stripped.startswith("/snapshot/") or stripped.startswith("file://"):
             continue
+        if stripped.startswith("FetchError:"):
+            continue
+        if stripped in lines_to_skip:
+            continue
         if "triggerUncaughtException" in stripped:
             continue
         cleaned.append(line)
     result = "\n".join(cleaned).strip()
-    # If after cleaning we lost the actual message, keep the first line.
     if not result or len(result) < 5:
         return lines[0] if lines else detail
     return result
@@ -121,6 +137,23 @@ class BitwardenClient:
     # ------------------------------------------------------------------ #
     # Low-level CLI helpers
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _is_network_timed_out(output: str) -> bool:
+        """Check if output indicates a network timeout."""
+        lower = output.lower()
+        return any(
+            marker in lower
+            for marker in [
+                "timed out",
+                "etimedout",
+                "econnrefused",
+                "enotfound",
+                "econnreset",
+                "fetcherror",
+                "unable to fetch",
+            ]
+        )
+
     def _run(
         self,
         args: List[str],
@@ -128,7 +161,7 @@ class BitwardenClient:
         input_text: Optional[str] = None,
         check: bool = True,
         with_session: bool = True,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ) -> BWResult:
         cmd = [self.bw_path] + args
         if with_session and self.session:
@@ -148,8 +181,11 @@ class BitwardenClient:
         except subprocess.TimeoutExpired:
             msg = (
                 f"`bw {' '.join(args)}` timed out after {timeout:.0f}s.\n"
-                f"  The Bitwarden CLI may be stuck — check that your vault session is valid\n"
-                f"  and that 'bw' is the correct executable ({self.bw_path})."
+                f"  The Bitwarden CLI may be stuck or your network connection may be slow.\n"
+                f"  - Check your internet connection\n"
+                f"  - Verify 'bw' can reach api.bitwarden.com (try 'bw sync' manually)\n"
+                f"  - Check that your vault session is valid\n"
+                f"  - Confirm 'bw' is the correct executable ({self.bw_path})"
             )
             raise BitwardenError(msg)
         result = BWResult(
@@ -173,6 +209,15 @@ class BitwardenClient:
                 )
             # Clean up raw Node.js stacktraces from bw CLI errors.
             detail = _clean_bw_error(detail)
+            # Detect network issues and give actionable advice
+            if self._is_network_timed_out(detail):
+                detail = (
+                    f"{detail}\n"
+                    f"  This appears to be a network connectivity issue. "
+                    f"Make sure you have internet access\n"
+                    f"  and can reach https://api.bitwarden.com (try 'curl -I "
+                    f"https://api.bitwarden.com')."
+                )
             if check:
                 raise BitwardenError(
                     f"`bw {' '.join(args)}` failed (exit {result.code}): {detail}"
@@ -200,6 +245,7 @@ class BitwardenClient:
             ["login", email, password, "--raw"],
             with_session=False,
             check=False,
+            timeout=120.0,
         )
         if not res.ok:
             # Already authenticated is not fatal.
@@ -217,7 +263,12 @@ class BitwardenClient:
         if email:
             self.email = email
         self.password = password
-        res = self._run(["unlock", password, "--raw"], with_session=False, check=False)
+        res = self._run(
+            ["unlock", password, "--raw"],
+            with_session=False,
+            check=False,
+            timeout=120.0,
+        )
         if not res.ok or not res.stdout:
             raise BitwardenError(f"Unlock failed: {res.stderr or res.stdout}")
         self.session = res.stdout
@@ -277,7 +328,7 @@ class BitwardenClient:
 
     def sync(self) -> None:
         self._progress("  syncing vault with server …")
-        self._run(["sync"])
+        self._run(["sync"], timeout=120.0)
         self._progress("  sync complete")
 
     # ------------------------------------------------------------------ #
