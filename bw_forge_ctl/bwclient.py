@@ -378,6 +378,20 @@ class BitwardenClient:
         res = self._run(args)
         return json.loads(res.stdout) if res.stdout else []
 
+    def get_item(self, item_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single vault item by ID."""
+        if self.use_serve:
+            try:
+                return self._api("GET", f"/object/item/{item_id}")
+            except BitwardenError:
+                return None
+        self._ensure_vault_ready()
+        try:
+            res = self._run(["get", "item", item_id])
+            return json.loads(res.stdout) if res.stdout else None
+        except BitwardenError:
+            return None
+
     def get_template(self, name: str = "item") -> Dict[str, Any]:
         self._ensure_vault_ready()
         res = self._run(["get", "template", name])

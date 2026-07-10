@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .bwclient import TYPE_SSH_KEY, BitwardenClient, BitwardenError
-from .pgp import is_pgp_note
+from .bwclient import TYPE_SECURE_NOTE, TYPE_SSH_KEY, BitwardenClient, BitwardenError
+from .pgp import is_pgp_note, text_contains_pgp
 from .sshscan import (
     SSHKeyPair,
     _derive_public_from_private_text,
@@ -473,6 +473,267 @@ class Importer:
                 action=ACTION_UPDATED,
                 item_id=rec.id,
                 detail=f"overwritten from vault ({diffs})",
+            ))
+
+        return results
+
+    # ------------------------------------------------------------------ #
+    # GPG sync
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _scan_gpg_local() -> List[Dict[str, str]]:
+        """Scan local GPG keyring for secret keys.
+
+        Returns a list of dicts with keys: ``key_id``, ``email``,
+        ``name``, ``fingerprint``.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gpg", "--list-secret-keys", "--with-colons"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return []
+
+        keys: Dict[str, Dict[str, str]] = {}
+        cur_id = ""
+        for line in result.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) < 10:
+                continue
+            if parts[0] == "sec":
+                cur_id = parts[4]
+                keys[cur_id] = {"key_id": cur_id, "fingerprint": "", "email": "", "name": ""}
+            elif parts[0] == "fpr" and cur_id:
+                keys[cur_id]["fingerprint"] = parts[9] if len(parts) > 9 else ""
+            elif parts[0] == "uid" and cur_id:
+                uid = parts[9] if len(parts) > 9 else ""
+                import re
+                m = re.match(r"^(.*?)\s*<([^>]+)>$", uid)
+                if m:
+                    keys[cur_id]["name"] = m.group(1).strip()
+                    keys[cur_id]["email"] = m.group(2).strip()
+
+        return list(keys.values())
+
+    @staticmethod
+    def _gpg_export_secret(key_id: str) -> str:
+        """Export an armored secret key from the local GPG keyring."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gpg", "--armor", "--export-secret-keys", key_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _gpg_export_public(key_id: str) -> str:
+        """Export an armored public key from the local GPG keyring."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gpg", "--armor", "--export", key_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout
+        except Exception:
+            pass
+        return ""
+
+    def sync_gpg_to_vault(
+        self,
+        *,
+        dry_run: bool = False,
+    ) -> List[SyncResult]:
+        """Push local GPG secret keys to Bitwarden vault as secure notes.
+
+        Scans the local GPG keyring, checks each key against existing
+        vault secure notes, and creates or updates as needed.
+        """
+        local_keys = self._scan_gpg_local()
+        self._progress(f"  found {len(local_keys)} GPG key(s) in local keyring")
+        if not local_keys:
+            return []
+
+        existing = self.load_pgp_notes()
+        template = self.client.get_template("item")
+        results: List[SyncResult] = []
+
+        for lk in local_keys:
+            key_id = lk["key_id"]
+            email = lk["email"]
+            name = f"gpg: {email}" if email else f"gpg: {key_id}"
+
+            match = next(
+                (n for n in existing if n.get("name") == name),
+                None,
+            )
+
+            if match:
+                existing_notes = (match.get("notes") or "")
+                if key_id in existing_notes:
+                    results.append(SyncResult(
+                        name=name,
+                        fingerprint=lk["fingerprint"],
+                        action=ACTION_UNCHANGED,
+                        item_id=match.get("id"),
+                        detail="already in vault",
+                    ))
+                    continue
+
+            secret = self._gpg_export_secret(key_id)
+            if not secret:
+                self._progress(f"  warning: could not export secret key {key_id}, skipping")
+                continue
+
+            if dry_run:
+                results.append(SyncResult(
+                    name=name,
+                    fingerprint=lk["fingerprint"],
+                    action=ACTION_SKIPPED,
+                    detail="new GPG key; would be stored (dry run)",
+                ))
+                continue
+
+            item = dict(template)
+            item["type"] = TYPE_SECURE_NOTE
+            item["name"] = name
+            item["secureNote"] = {"type": 0}
+            item["login"] = None
+            item["card"] = None
+            item["identity"] = None
+            for f in ("fields", "attachments", "collectionIds"):
+                item.pop(f, None)
+
+            note_parts = [
+                f"GPG Key: {email}",
+                f"Fingerprint: {lk['fingerprint']}",
+                f"Key ID: {key_id}",
+                "",
+                secret,
+            ]
+            item["notes"] = "\n".join(note_parts)
+
+            if match:
+                item["id"] = match["id"]
+                try:
+                    self.client.edit_item(match["id"], item)
+                    results.append(SyncResult(
+                        name=name,
+                        fingerprint=lk["fingerprint"],
+                        action=ACTION_UPDATED,
+                        item_id=match["id"],
+                        detail="updated GPG key in vault",
+                    ))
+                except BitwardenError as exc:
+                    results.append(SyncResult(
+                        name=name,
+                        fingerprint=lk["fingerprint"],
+                        action=ACTION_SKIPPED,
+                        detail=f"update failed: {exc}",
+                    ))
+            else:
+                try:
+                    created = self.client.create_item(item)
+                    results.append(SyncResult(
+                        name=name,
+                        fingerprint=lk["fingerprint"],
+                        action=ACTION_CREATED,
+                        item_id=created.get("id"),
+                        detail="stored GPG key in vault",
+                    ))
+                except BitwardenError as exc:
+                    results.append(SyncResult(
+                        name=name,
+                        fingerprint=lk["fingerprint"],
+                        action=ACTION_SKIPPED,
+                        detail=f"create failed: {exc}",
+                    ))
+
+        return results
+
+    def sync_gpg_from_vault(
+        self,
+        gpg_dir: Optional[str] = None,
+        *,
+        dry_run: bool = False,
+    ) -> List[SyncResult]:
+        """Pull GPG secure notes from vault and write them to ``.asc`` files.
+
+        Keys are written as armored ``.asc`` files under *gpg_dir*
+        (default: ``~/.ssh/``, using GPG item names as filenames).
+        """
+        directory = Path(gpg_dir).expanduser() if gpg_dir else Path.home() / ".ssh"
+        notes = self.load_pgp_notes()
+        self._progress(f"  found {len(notes)} GPG note(s) in vault")
+        if not notes:
+            return []
+
+        results: List[SyncResult] = []
+        for note in notes:
+            name = str(note.get("name", "unknown"))
+            notes_text = note.get("notes") or ""
+            key_id = ""
+            for line in notes_text.splitlines():
+                if line.startswith("Key ID:"):
+                    key_id = line.replace("Key ID:", "").strip()
+                    break
+
+            armored = ""
+            in_block = False
+            for line in notes_text.splitlines(keepends=True):
+                if "-----BEGIN PGP" in line:
+                    in_block = True
+                if in_block:
+                    armored += line
+                if "-----END PGP" in line:
+                    break
+
+            if not armored:
+                self._diagnostic(f"  {name}: no PGP block found in notes, skipping")
+                continue
+
+            safe_name = name.replace("/", "_").replace(":", "_")
+            asc_path = directory / f"{safe_name}.asc"
+
+            if asc_path.exists():
+                local = asc_path.read_text(encoding="utf-8", errors="ignore")
+                if _normalize(local) == _normalize(armored):
+                    results.append(SyncResult(
+                        name=name,
+                        fingerprint=key_id,
+                        action=ACTION_UNCHANGED,
+                        detail="identical to local file",
+                    ))
+                    continue
+
+            if dry_run:
+                results.append(SyncResult(
+                    name=name,
+                    fingerprint=key_id,
+                    action=ACTION_SKIPPED,
+                    detail=f"would write {asc_path.name} (dry run)",
+                ))
+                continue
+
+            directory.mkdir(parents=True, exist_ok=True)
+            asc_path.write_text(armored)
+            results.append(SyncResult(
+                name=name,
+                fingerprint=key_id,
+                action=ACTION_CREATED,
+                detail=f"written to {asc_path.name}",
             ))
 
         return results

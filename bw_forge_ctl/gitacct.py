@@ -28,8 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .bwclient import TYPE_LOGIN, TYPE_SSH_KEY, BitwardenClient, BitwardenError
+from .bwclient import TYPE_LOGIN, TYPE_SECURE_NOTE, TYPE_SSH_KEY, BitwardenClient, BitwardenError
 from .importer import SSHRecord
+from .ssh_config import add_stanza, generate_git_stanza
 from .sshscan import SSHKeyPair
 
 # --------------------------------------------------------------------------- #
@@ -260,8 +261,22 @@ def generate_ssh_config_stanza(platform: str, account_name: str, key_name: str) 
         f"  HostName {hostname}\n"
         f"  User git\n"
         f"  IdentityFile ~/.ssh/{key_name}\n"
+        f"  AddKeysToAgent yes\n"
         f"  IdentitiesOnly yes\n"
     )
+
+
+def install_ssh_config_stanza(
+    platform: str, account_name: str, key_name: str,
+    ssh_config_path: Optional[str] = None,
+) -> bool:
+    """Install (add or update) an SSH config stanza for a git account.
+
+    Returns ``True`` if a new stanza was appended, ``False`` if an
+    existing one was updated in place.
+    """
+    stanza = generate_git_stanza(platform, account_name, key_name)
+    return add_stanza(stanza, path=ssh_config_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -623,3 +638,255 @@ def _check_duplicates(
                 item_name=name,
                 detail=f"IDs: {', '.join(ids)}",
             ))
+
+
+# --------------------------------------------------------------------------- #
+# GPG key generation
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class GPGKeyResult:
+    fingerprint: str
+    key_id: str
+    public_key_armored: str
+    private_key_armored: str
+    name: str
+    email: str
+    errors: List[str] = field(default_factory=list)
+
+
+def generate_gpg_key(
+    name: str,
+    email: str,
+    *,
+    key_type: str = "ed25519",
+    passphrase: str = "",
+    expire_date: str = "0",
+) -> GPGKeyResult:
+    """Generate a new GPG key pair using ``gpg --batch --gen-key``.
+
+    Returns a :class:`GPGKeyResult` with fingerprint, key ID, and
+    armored key material.  Raises ``RuntimeError`` if ``gpg`` is not
+    available or key generation fails.
+    """
+    if key_type == "ed25519":
+        batch = (
+            f"Key-Type: ed25519\n"
+            f"Key-Curve: Ed25519\n"
+            f"Key-Usage: sign\n"
+            f"Subkey-Type: cv25519\n"
+            f"Subkey-Usage: encrypt\n"
+        )
+    else:
+        batch = (
+            f"Key-Type: RSA\n"
+            f"Key-Length: {key_type.removeprefix('rsa') or '4096'}\n"
+            f"Key-Usage: sign\n"
+            f"Subkey-Type: RSA\n"
+            f"Subkey-Length: {key_type.removeprefix('rsa') or '4096'}\n"
+            f"Subkey-Usage: encrypt\n"
+        )
+    batch += (
+        f"Name-Real: {name}\n"
+        f"Name-Email: {email}\n"
+        f"Expire-Date: {expire_date}\n"
+    )
+    if passphrase:
+        batch += f"Passphrase: {passphrase}\n"
+    else:
+        batch += "%no-protection\n"
+    batch += "%commit\n"
+
+    try:
+        result = subprocess.run(
+            ["gpg", "--batch", "--gen-key"],
+            input=batch,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("gpg not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("gpg --gen-key timed out") from exc
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gpg --gen-key failed: {result.stderr.strip()}"
+        )
+
+    # Extract fingerprint from stderr: "gpg: key <hex> marked as ultimately trusted"
+    stderr = result.stderr
+    fp_match = re.search(r"gpg:\s+key\s+([0-9A-Fa-f]+)\s+marked", stderr)
+    if not fp_match:
+        fp_match = re.search(r"gpg:\s+key\s+([0-9A-Fa-f]+):", stderr)
+    if not fp_match:
+        raise RuntimeError(
+            f"Could not determine GPG key fingerprint from output:\n{stderr}"
+        )
+
+    key_id = fp_match.group(1).upper()
+    long_fp = _get_gpg_fingerprint(key_id)
+
+    # Export keys
+    public_armored = _gpg_export(f"--armor --export {key_id}")
+    private_armored = _gpg_export(f"--armor --export-secret-keys {key_id}")
+
+    return GPGKeyResult(
+        fingerprint=long_fp or key_id,
+        key_id=key_id,
+        public_key_armored=public_armored,
+        private_key_armored=private_armored,
+        name=name,
+        email=email,
+    )
+
+
+def _get_gpg_fingerprint(key_id: str) -> str:
+    try:
+        result = subprocess.run(
+            ["gpg", "--fingerprint", "--with-colons", key_id],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 10 and parts[0] == "fpr":
+                return parts[9] if len(parts) > 9 else key_id
+    except Exception:
+        pass
+    return key_id
+
+
+def _gpg_export(cmd_str: str) -> str:
+    try:
+        result = subprocess.run(
+            ["gpg"] + cmd_str.split(),
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    return ""
+
+
+def store_gpg_key_in_vault(
+    client: BitwardenClient,
+    gpg_key: GPGKeyResult,
+) -> Optional[str]:
+    """Store a GPG key as a secure note in the Bitwarden vault.
+
+    The note body contains the armored private key and the item name
+    follows the convention ``gpg: <email>``.
+    Returns the item ID or ``None`` on failure.
+    """
+    template = client.get_template("item")
+    item = dict(template)
+    item["type"] = TYPE_SECURE_NOTE
+    item["name"] = f"gpg: {gpg_key.email}"
+
+    note_parts = [
+        f"GPG Key: {gpg_key.email}",
+        f"Fingerprint: {gpg_key.fingerprint}",
+        f"Key ID: {gpg_key.key_id}",
+        "",
+        gpg_key.private_key_armored,
+    ]
+    item["notes"] = "\n".join(note_parts)
+    item["login"] = None
+    item["secureNote"] = {"type": 0}
+    item["card"] = None
+    item["identity"] = None
+    for f in ("fields", "attachments", "collectionIds"):
+        item.pop(f, None)
+
+    try:
+        created = client.create_item(item)
+        return created.get("id")
+    except BitwardenError as exc:
+        return None
+
+
+def load_gpg_notes(client: BitwardenClient) -> List[Dict[str, Any]]:
+    """Load secure-note items whose name starts with ``gpg:``."""
+    from .pgp import text_contains_pgp
+
+    items = []
+    for item in client.list_items():
+        name = str(item.get("name", ""))
+        if item.get("type") != TYPE_SECURE_NOTE:
+            continue
+        if name.startswith("gpg:") or text_contains_pgp(item.get("notes") or ""):
+            items.append(item)
+    return items
+
+
+# --------------------------------------------------------------------------- #
+# Forge upload helpers
+# --------------------------------------------------------------------------- #
+
+
+def upload_ssh_key_to_forge(
+    platform: str,
+    token: str,
+    account_name: str,
+    public_key: str,
+    key_title: Optional[str] = None,
+    *,
+    replace_existing: bool = False,
+) -> Dict[str, Any]:
+    """Upload an SSH public key to GitHub or GitLab.
+
+    Returns ``{"status": "created"|"replaced"|"exists", "key_id": int}``.
+    """
+    from .forge_api import ForgeAPI, forge_key_name
+
+    api = ForgeAPI(platform, token)
+    title = key_title or forge_key_name(platform, account_name, "ssh")
+
+    # Check if key already exists
+    existing = api.list_ssh_keys()
+    for ek in existing:
+        if public_key.strip() in ek.key:
+            return {"status": "exists", "key_id": ek.id}
+
+    # Delete matching if replacing
+    if replace_existing:
+        for ek in existing:
+            if account_name.lower() in ek.title.lower() or platform in ek.title.lower():
+                api.delete_ssh_key(ek.id)
+
+    created = api.add_ssh_key(title, public_key.strip())
+    return {"status": "replaced" if replace_existing else "created", "key_id": created.id}
+
+
+def upload_gpg_key_to_forge(
+    platform: str,
+    token: str,
+    account_name: str,
+    armored_public_key: str,
+    *,
+    replace_existing: bool = False,
+) -> Dict[str, Any]:
+    """Upload an armored GPG public key to GitHub or GitLab.
+
+    Returns ``{"status": "created"|"replaced"|"exists", "key_id": int}``.
+    """
+    from .forge_api import ForgeAPI
+
+    api = ForgeAPI(platform, token)
+
+    # Check if key already exists
+    existing = api.list_gpg_keys()
+    armored_stripped = armored_public_key.strip()
+    for ek in existing:
+        if ek.public_key.strip() == armored_stripped:
+            return {"status": "exists", "key_id": ek.id}
+
+    if replace_existing and existing:
+        for ek in existing:
+            api.delete_gpg_key(ek.id)
+
+    created = api.add_gpg_key(armored_public_key)
+    return {"status": "replaced" if (replace_existing and existing) else "created", "key_id": created.id}

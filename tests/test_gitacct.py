@@ -91,6 +91,7 @@ class TestSshConfigStanza:
         assert "HostName github.com" in stanza
         assert "IdentityFile ~/.ssh/id_ed25519-dev@outlook.com" in stanza
         assert "User git" in stanza
+        assert "AddKeysToAgent yes" in stanza
         assert "IdentitiesOnly yes" in stanza
 
     def test_gitlab(self):

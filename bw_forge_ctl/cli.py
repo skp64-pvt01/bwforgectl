@@ -13,6 +13,10 @@ Subcommand groups
   bwforgectl account create            Create a new git account (key + BW items).
   bwforgectl account verify            Verify git accounts via SSH auth.
   bwforgectl audit vault               Audit vault for consistency issues.
+  bwforgectl config list               List Host stanzas in ~/.ssh/config.
+  bwforgectl config show <host>        Show a specific Host stanza.
+  bwforgectl config install            Add or update a Host stanza.
+  bwforgectl config remove <host>      Remove a Host stanza.
   bwforgectl sync                      Bidirectional sync (interactive).
   bwforgectl sync host                 Push local keys to vault.
   bwforgectl sync vault                Pull vault keys to local disk.
@@ -30,15 +34,29 @@ from typing import Optional
 
 from .bwclient import TYPE_SSH_KEY, BitwardenClient, BitwardenError
 from .credentials import CredentialError, Credentials, CredentialStore
+from .forge_api import ForgeAPI, forge_key_name, resolve_forge_token
 from .gitacct import (
     AccountVerification,
+    GPGKeyResult,
     audit_git_vault,
     create_git_account,
+    generate_gpg_key,
+    install_ssh_config_stanza,
     load_git_logins,
     load_git_ssh_keys,
+    load_gpg_notes,
     parse_git_login_name,
-    try_ssh_auth,
     ssh_host_for_account,
+    store_gpg_key_in_vault,
+    try_ssh_auth,
+    upload_gpg_key_to_forge,
+    upload_ssh_key_to_forge,
+)
+from .ssh_config import (
+    generate_git_stanza,
+    list_stanzas,
+    make_stanza,
+    remove_stanza,
 )
 from .hostscan import (
     HostKeyEntry,
@@ -49,6 +67,7 @@ from .hostscan import (
 )
 from .importer import (
     ACTION_CREATED,
+    SyncResult,
     ACTION_DECLINED,
     ACTION_SKIPPED,
     ACTION_UNCHANGED,
@@ -325,8 +344,8 @@ def print_full_help(file=None):
 
 
 def _resolve_credentials(args: argparse.Namespace) -> Credentials:
-    email = args.email or os.environ.get("BW_EMAIL")
-    password = args.password or os.environ.get("BW_PASSWORD")
+    email = getattr(args, "email", None) or os.environ.get("BW_EMAIL")
+    password = getattr(args, "password", None) or os.environ.get("BW_PASSWORD")
 
     should_try_store = bool(
         args.use_stored or os.environ.get("BW_STORE_PASSPHRASE")
@@ -914,6 +933,70 @@ def cmd_sync_vault(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_gpg_sync_results(results: List[SyncResult]) -> None:
+    for r in results:
+        icon = {
+            "created": "✓",
+            "updated": "→",
+            "unchanged": "=",
+            "skipped": "~",
+            "declined": "✗",
+        }.get(r.action, "?")
+        print(f"  {icon}  {r.name:<30s} {r.detail}")
+
+
+def cmd_sync_gpg_host(args: argparse.Namespace) -> int:
+    """Push local GPG keys to Bitwarden vault."""
+    verbose = _verbose_level(args)
+    client = _make_client(args)
+    try:
+        if not _no_sync(args):
+            client.sync()
+
+        importer = Importer(client, name_prefix=args.name_prefix)
+        _progress("  scanning local GPG keyring …", verbose)
+
+        results = importer.sync_gpg_to_vault(
+            dry_run=args.dry_run,
+        )
+    finally:
+        client.stop_serve()
+
+    if args.json:
+        print(json.dumps([r.__dict__ for r in results], indent=2))
+        return 0
+
+    _print_gpg_sync_results(results)
+    return 0
+
+
+def cmd_sync_gpg_vault(args: argparse.Namespace) -> int:
+    """Pull GPG keys from vault to local ``.asc`` files."""
+    verbose = _verbose_level(args)
+    client = _make_client(args)
+    try:
+        if not _no_sync(args):
+            client.sync()
+
+        importer = Importer(client, name_prefix=args.name_prefix)
+        gpg_dir = args.gpg_dir or os.path.expanduser("~/.ssh")
+        _progress(f"  comparing vault GPG notes against {gpg_dir} …", verbose)
+
+        results = importer.sync_gpg_from_vault(
+            gpg_dir,
+            dry_run=args.dry_run,
+        )
+    finally:
+        client.stop_serve()
+
+    if args.json:
+        print(json.dumps([r.__dict__ for r in results], indent=2))
+        return 0
+
+    _print_gpg_sync_results(results)
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # Account commands
 # --------------------------------------------------------------------------- #
@@ -979,8 +1062,13 @@ def cmd_account_create(args: argparse.Namespace) -> int:
         print(f"  Public key to register on {platform}:")
         print(f"    {result.public_key}")
         print()
-        print(f"  Add to ~/.ssh/config:")
-        print(result.config_stanza)
+        if args.install_config:
+            install_ssh_config_stanza(platform, account_name, result.key_name,
+                                      ssh_config_path=args.ssh_config)
+            print(f"  Installed stanza in SSH config.")
+        else:
+            print(f"  Add to ~/.ssh/config:")
+            print(result.config_stanza)
 
     finally:
         client.stop_serve()
@@ -1141,8 +1229,248 @@ def cmd_audit_vault(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# SSH config commands
+# --------------------------------------------------------------------------- #
+
+
+def cmd_config_list(args: argparse.Namespace) -> int:
+    """List all Host stanzas in ~/.ssh/config."""
+    stanzas = list_stanzas(args.ssh_config)
+
+    if args.json:
+        print(json.dumps([
+            {
+                "hosts": s.hosts,
+                "options": [{"key": k, "value": v} for k, v in s.options],
+            }
+            for s in stanzas
+        ], indent=2))
+        return 0
+
+    if not stanzas:
+        print("No Host stanzas found in SSH config.")
+        return 0
+
+    print(f"  SSH config: {args.ssh_config or '~/.ssh/config'}")
+    for s in stanzas:
+        host_str = " ".join(s.hosts)
+        identity = ""
+        for k, v in s.options:
+            if k.lower() == "identityfile":
+                identity = v
+                break
+        hostname = ""
+        for k, v in s.options:
+            if k.lower() == "hostname":
+                hostname = v
+                break
+        extra = f"  → {hostname}" if hostname else ""
+        extra += f"  [{identity}]" if identity else ""
+        print(f"    Host {host_str}{extra}")
+    return 0
+
+
+def cmd_config_show(args: argparse.Namespace) -> int:
+    """Show a specific Host stanza."""
+    stanzas = list_stanzas(args.ssh_config)
+    host = args.host
+
+    for s in stanzas:
+        if s.hosts and s.hosts[0].lower() == host.lower():
+            if args.json:
+                print(json.dumps({
+                    "hosts": s.hosts,
+                    "options": [{"key": k, "value": v} for k, v in s.options],
+                    "raw": s.raw,
+                }, indent=2))
+                return 0
+            print(s.raw.rstrip())
+            return 0
+
+    print(f"No stanza found for host '{host}'.", file=sys.stderr)
+    return 1
+
+
+def cmd_config_install(args: argparse.Namespace) -> int:
+    """Install (add or update) an SSH config stanza."""
+    if args.platform and args.account_name and args.key_name:
+        stanza = generate_git_stanza(
+            args.platform, args.account_name, args.key_name,
+        )
+    elif args.host and args.hostname:
+        stanza = make_stanza(
+            host=args.host,
+            hostname=args.hostname,
+            user=args.user or "git",
+            identity_file=args.identity_file or "",
+            add_keys_to_agent=not args.no_add_keys_to_agent,
+            identities_only=not args.no_identities_only,
+            forward_agent=args.forward_agent,
+            comment=args.comment or "",
+        )
+    else:
+        print(
+            "error: specify either --platform/--account-name/--key-name "
+            "or --host/--hostname",
+            file=sys.stderr,
+        )
+        return 1
+
+    from .ssh_config import add_stanza as _add_stanza
+
+    added = _add_stanza(stanza, path=args.ssh_config)
+    if added:
+        print(f"  Added Host stanza '{stanza.hosts[0]}' to SSH config.")
+    else:
+        print(f"  Updated Host stanza '{stanza.hosts[0]}' in SSH config.")
+    return 0
+
+
+def cmd_config_remove(args: argparse.Namespace) -> int:
+    """Remove a Host stanza from SSH config."""
+    if remove_stanza(args.host, path=args.ssh_config):
+        print(f"  Removed Host stanza '{args.host}' from SSH config.")
+        return 0
+    print(f"No stanza found for host '{args.host}'.", file=sys.stderr)
+    return 1
+
+
+# --------------------------------------------------------------------------- #
+# Key management commands
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_key_token(args: argparse.Namespace, client: BitwardenClient) -> str:
+    """Resolve a forge API token from args, env, or vault lookup."""
+    token = args.token or os.environ.get("FORGE_TOKEN") or ""
+    if not token and args.platform and args.account_name:
+        token = resolve_forge_token(client, args.platform, args.account_name) or ""
+    if not token:
+        print("error: no forge API token available", file=sys.stderr)
+        print("  Provide via --token, FORGE_TOKEN env var,", file=sys.stderr)
+        print("  or store a Bitwarden login item named", file=sys.stderr)
+        print(f"  'git: {args.platform}: {args.account_name}: pat'", file=sys.stderr)
+        raise SystemExit(1)
+    return token
+
+
+def cmd_key_upload_ssh(args: argparse.Namespace) -> int:
+    """Upload an SSH public key to a forge platform."""
+    verbose = _verbose_level(args)
+    client = _make_client(args)
+    try:
+        token = _resolve_key_token(args, client)
+        if args.key_file:
+            key_text = Path(args.key_file).read_text(encoding="utf-8").strip()
+        else:
+            print("error: --key-file is required", file=sys.stderr)
+            return 1
+
+        _progress(f"  uploading SSH key to {args.platform} …", verbose)
+        result = upload_ssh_key_to_forge(
+            args.platform, token, args.account_name, key_text,
+            key_title=args.key_title,
+            replace_existing=args.replace,
+        )
+        print(f"  SSH key upload: {result['status']} (id={result['key_id']})")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        client.stop_serve()
+
+
+def cmd_key_upload_gpg(args: argparse.Namespace) -> int:
+    """Upload an armored GPG public key to a forge platform."""
+    verbose = _verbose_level(args)
+    client = _make_client(args)
+    try:
+        token = _resolve_key_token(args, client)
+        if args.key_file:
+            key_text = Path(args.key_file).read_text(encoding="utf-8").strip()
+        else:
+            print("error: --key-file is required", file=sys.stderr)
+            return 1
+
+        _progress(f"  uploading GPG key to {args.platform} …", verbose)
+        result = upload_gpg_key_to_forge(
+            args.platform, token, args.account_name, key_text,
+            replace_existing=args.replace,
+        )
+        print(f"  GPG key upload: {result['status']} (id={result['key_id']})")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        client.stop_serve()
+
+
+def cmd_key_generate_gpg(args: argparse.Namespace) -> int:
+    """Generate a new GPG key pair, optionally store in vault and upload."""
+    verbose = _verbose_level(args)
+    client = _make_client(args) if args.store or args.upload else None
+
+    try:
+        name = args.name or args.email
+        _progress(f"  generating GPG key for '{name} <{args.email}>' …", verbose)
+        result = generate_gpg_key(
+            name=name or args.email,
+            email=args.email,
+            key_type=args.key_type,
+        )
+
+        if result.errors:
+            for err in result.errors:
+                print(f"error: {err}", file=sys.stderr)
+            return 1
+
+        print()
+        print(f"  GPG key generated:")
+        print(f"    Fingerprint:  {result.fingerprint}")
+        print(f"    Key ID:       {result.key_id}")
+        print(f"    Email:        {result.email}")
+        print()
+
+        if args.store and client:
+            _progress("  storing in Bitwarden vault …", verbose)
+            item_id = store_gpg_key_in_vault(client, result)
+            if item_id:
+                print(f"  Stored in vault: gpg: {result.email} (id={item_id})")
+            else:
+                print("warning: failed to store GPG key in vault", file=sys.stderr)
+
+        if args.upload and client:
+            token = _resolve_key_token(args, client)
+            _progress(f"  uploading GPG key to {args.platform} …", verbose)
+            up_result = upload_gpg_key_to_forge(
+                args.platform, token, args.account_name,
+                result.public_key_armored,
+                replace_existing=args.replace,
+            )
+            print(f"  GPG key upload: {up_result['status']} (id={up_result['key_id']})")
+
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if client:
+            client.stop_serve()
+
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # Argument parser
 # --------------------------------------------------------------------------- #
+
+
+def _add_ssh_config_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ssh-config",
+        help="Path to SSH config file (default: ~/.ssh/config).",
+    )
 
 
 def _add_auth_args(parser: argparse.ArgumentParser) -> None:
@@ -1334,7 +1662,16 @@ def build_parser() -> argparse.ArgumentParser:
     acct_sub = p_acct.add_subparsers(dest="acct_cmd")
 
     p_acct_create = acct_sub.add_parser("create", help="Create a new git account with SSH key + vault items.")
-    _add_auth_args(p_acct_create)
+    _add_ssh_config_arg(p_acct_create)
+    g_acct_auth = p_acct_create.add_argument_group("authentication / credentials")
+    g_acct_auth.add_argument("--session", help="Existing bw session key to reuse (env: BW_SESSION).")
+    g_acct_auth.add_argument("--use-stored", action="store_true",
+                             help="Load credentials from OS keyring or encrypted file.")
+    g_acct_auth.add_argument("--store-passphrase",
+                             help="Passphrase for encrypted credential file (env: BW_STORE_PASSPHRASE).")
+    g_acct_auth.add_argument("--config-dir", help="Credential store directory (default: ~/.config/bwforgectl).")
+    g_acct_auth.add_argument("--no-keyring", action="store_true",
+                             help="Force encrypted-file backend instead of OS keyring.")
     p_acct_create.add_argument("--platform", required=True, choices=["github", "gitlab"], help="Git platform.")
     p_acct_create.add_argument("--account-name", required=True, help="Account name (e.g., skp1964-dev).")
     p_acct_create.add_argument("--email", required=True, help="Registered email for the account.")
@@ -1346,6 +1683,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_acct_create.add_argument("--no-login", action="store_true", help="Skip creating login item.")
     p_acct_create.add_argument("--no-ssh-key", action="store_true", help="Skip creating SSH key item.")
     p_acct_create.add_argument("--dry-run", action="store_true", help="Report what would be done.")
+    p_acct_create.add_argument("--install-config", action="store_true",
+                               help="Install the SSH config stanza automatically.")
     p_acct_create.set_defaults(func=cmd_account_create)
 
     p_acct_verify = acct_sub.add_parser("verify", help="Verify git accounts via SSH authentication.")
@@ -1363,6 +1702,107 @@ def build_parser() -> argparse.ArgumentParser:
     _add_auth_args(p_audit_vault)
     p_audit_vault.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     p_audit_vault.set_defaults(func=cmd_audit_vault)
+
+    # === config ===
+    p_cfg = sub.add_parser("config", help="Manage ~/.ssh/config Host stanzas.")
+    cfg_sub = p_cfg.add_subparsers(dest="cfg_cmd")
+
+    p_cfg_list = cfg_sub.add_parser("list", help="List all Host stanzas.")
+    _add_ssh_config_arg(p_cfg_list)
+    p_cfg_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_cfg_list.set_defaults(func=cmd_config_list)
+
+    p_cfg_show = cfg_sub.add_parser("show", help="Show a specific Host stanza.")
+    _add_ssh_config_arg(p_cfg_show)
+    p_cfg_show.add_argument("host", help="Host pattern to show.")
+    p_cfg_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_cfg_show.set_defaults(func=cmd_config_show)
+
+    p_cfg_install = cfg_sub.add_parser(
+        "install",
+        help="Add or update a Host stanza.",
+    )
+    _add_ssh_config_arg(p_cfg_install)
+    g_cfg = p_cfg_install.add_argument_group("stanza options (git account)")
+    g_cfg.add_argument("--platform", choices=["github", "gitlab"],
+                       help="Git platform (use with --account-name and --key-name).")
+    g_cfg.add_argument("--account-name", help="Account name for git stanza.")
+    g_cfg.add_argument("--key-name", help="SSH key filename for git stanza.")
+    g_cfg2 = p_cfg_install.add_argument_group("stanza options (manual)")
+    g_cfg2.add_argument("--host", help="Host pattern.")
+    g_cfg2.add_argument("--hostname", help="Actual hostname (HostName).")
+    g_cfg2.add_argument("--user", default="git", help="SSH user (default: git).")
+    g_cfg2.add_argument("--identity-file", help="Path to identity file.")
+    g_cfg2.add_argument("--no-add-keys-to-agent", action="store_true",
+                        help="Omit AddKeysToAgent yes.")
+    g_cfg2.add_argument("--no-identities-only", action="store_true",
+                        help="Omit IdentitiesOnly yes.")
+    g_cfg2.add_argument("--forward-agent", action="store_true",
+                        help="Add ForwardAgent yes.")
+    g_cfg2.add_argument("--comment", help="Comment line above the stanza.")
+    p_cfg_install.set_defaults(func=cmd_config_install)
+
+    p_cfg_remove = cfg_sub.add_parser("remove", help="Remove a Host stanza.")
+    _add_ssh_config_arg(p_cfg_remove)
+    p_cfg_remove.add_argument("host", help="Host pattern to remove.")
+    p_cfg_remove.set_defaults(func=cmd_config_remove)
+
+    # === key ===
+    p_key = sub.add_parser("key", help="Manage SSH and GPG keys on forge platforms.")
+    key_sub = p_key.add_subparsers(dest="key_cmd")
+
+    p_key_upload_ssh = key_sub.add_parser(
+        "upload-ssh", help="Upload an SSH public key to GitHub/GitLab.",
+    )
+    _add_auth_args(p_key_upload_ssh)
+    p_key_upload_ssh.add_argument("--platform", required=True, choices=["github", "gitlab"])
+    p_key_upload_ssh.add_argument("--account-name", required=True)
+    p_key_upload_ssh.add_argument("--key-file", required=True, help="Path to SSH public key file.")
+    p_key_upload_ssh.add_argument("--token", help="Forge API token (env: FORGE_TOKEN).")
+    p_key_upload_ssh.add_argument("--key-title", help="Title for the key on the platform.")
+    p_key_upload_ssh.add_argument("--replace", action="store_true",
+                                  help="Replace existing keys for this account.")
+    p_key_upload_ssh.set_defaults(func=cmd_key_upload_ssh)
+
+    p_key_upload_gpg = key_sub.add_parser(
+        "upload-gpg", help="Upload an armored GPG public key to GitHub/GitLab.",
+    )
+    _add_auth_args(p_key_upload_gpg)
+    p_key_upload_gpg.add_argument("--platform", required=True, choices=["github", "gitlab"])
+    p_key_upload_gpg.add_argument("--account-name", required=True)
+    p_key_upload_gpg.add_argument("--key-file", required=True, help="Path to armored GPG public key (.asc).")
+    p_key_upload_gpg.add_argument("--token", help="Forge API token (env: FORGE_TOKEN).")
+    p_key_upload_gpg.add_argument("--replace", action="store_true",
+                                  help="Replace existing keys for this account.")
+    p_key_upload_gpg.set_defaults(func=cmd_key_upload_gpg)
+
+    p_key_gen_gpg = key_sub.add_parser(
+        "generate-gpg", help="Generate a new GPG key pair.",
+    )
+    g_key_auth = p_key_gen_gpg.add_argument_group("authentication / credentials")
+    g_key_auth.add_argument("--session", help="Existing bw session key to reuse (env: BW_SESSION).")
+    g_key_auth.add_argument("--use-stored", action="store_true",
+                            help="Load credentials from OS keyring or encrypted file.")
+    g_key_auth.add_argument("--store-passphrase",
+                            help="Passphrase for encrypted credential file (env: BW_STORE_PASSPHRASE).")
+    g_key_auth.add_argument("--config-dir", help="Credential store directory (default: ~/.config/bwforgectl).")
+    g_key_auth.add_argument("--no-keyring", action="store_true",
+                            help="Force encrypted-file backend instead of OS keyring.")
+    p_key_gen_gpg.add_argument("--name", help="Real name for the GPG key (default: email).")
+    p_key_gen_gpg.add_argument("--email", required=True, help="Email for the GPG key.")
+    p_key_gen_gpg.add_argument("--key-type", choices=["ed25519", "rsa4096"], default="ed25519",
+                               help="Key type (default: ed25519).")
+    p_key_gen_gpg.add_argument("--store", action="store_true",
+                               help="Store the GPG key in Bitwarden vault as secure note.")
+    p_key_gen_gpg.add_argument("--upload", action="store_true",
+                               help="Upload the GPG key to a forge platform.")
+    p_key_gen_gpg.add_argument("--platform", choices=["github", "gitlab"],
+                               help="Forge platform (required with --upload).")
+    p_key_gen_gpg.add_argument("--account-name", help="Forge account name (required with --upload).")
+    p_key_gen_gpg.add_argument("--token", help="Forge API token (env: FORGE_TOKEN).")
+    p_key_gen_gpg.add_argument("--replace", action="store_true",
+                               help="Replace existing GPG key on the platform.")
+    p_key_gen_gpg.set_defaults(func=cmd_key_generate_gpg)
 
     # === sync ===
     p_sync = sub.add_parser("sync", help="Synchronise local keys with the vault.")
@@ -1384,6 +1824,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_auth_args(p_sync_vault)
     _add_sync_opts(p_sync_vault)
     p_sync_vault.set_defaults(func=cmd_sync_vault)
+
+    # sync gpg-host
+    p_sync_gpg_host = sync_sub.add_parser(
+        "gpg-host", help="Push local GPG keys to the vault (host → vault).",
+    )
+    _add_auth_args(p_sync_gpg_host)
+    p_sync_gpg_host.add_argument("--dry-run", action="store_true", help="Report what would change.")
+    p_sync_gpg_host.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_sync_gpg_host.set_defaults(func=cmd_sync_gpg_host)
+
+    # sync gpg-vault
+    p_sync_gpg_vault = sync_sub.add_parser(
+        "gpg-vault", help="Pull GPG keys from vault to .asc files.",
+    )
+    _add_auth_args(p_sync_gpg_vault)
+    p_sync_gpg_vault.add_argument("--gpg-dir", help="Directory for .asc files (default: ~/.ssh).")
+    p_sync_gpg_vault.add_argument("--dry-run", action="store_true", help="Report what would change.")
+    p_sync_gpg_vault.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_sync_gpg_vault.set_defaults(func=cmd_sync_gpg_vault)
 
     return parser
 
@@ -1429,6 +1888,14 @@ def main(argv: Optional[list] = None) -> int:
     if args.group == "audit" and not getattr(args, "audit_cmd", None):
         parser.print_help()
         print("\nerror: missing audit subcommand (vault)", file=sys.stderr)
+        return 1
+    if args.group == "config" and not getattr(args, "cfg_cmd", None):
+        parser.print_help()
+        print("\nerror: missing config subcommand (list, show, install, or remove)", file=sys.stderr)
+        return 1
+    if args.group == "key" and not getattr(args, "key_cmd", None):
+        parser.print_help()
+        print("\nerror: missing key subcommand (upload-ssh, upload-gpg, or generate-gpg)", file=sys.stderr)
         return 1
 
     if not hasattr(args, "func"):
