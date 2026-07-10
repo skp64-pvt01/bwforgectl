@@ -10,7 +10,7 @@ Subcommand groups
   bwforgectl vault search <query>          Fuzzy-search vault keys.
   bwforgectl vault output                  Export vault keys to files or stdout.
   bwforgectl vault delete                  Remove keys from the vault.
-  bwforgectl account create                Create a new git account (key + BW items).
+  bwforgectl account create                Create a new git account (default platform: gitlab).
   bwforgectl account verify                Verify git accounts via SSH auth.
   bwforgectl audit vault                   Audit vault for consistency issues.
   bwforgectl config list                   List Host stanzas in ~/.ssh/config.
@@ -226,12 +226,13 @@ Groups & Commands
    ACCOUNT — create and verify git accounts
    ─────────────────────────────────────────
 
-     bwforgectl account create --platform <github|gitlab> --account-name <name> --email <email>
+     bwforgectl account create --account-name <name> --email <email>
          Create a new git account: generate an SSH key, create Bitwarden
          login + SSH key items, and print the SSH config stanza.
+         Platform defaults to GitLab; use --platform github for GitHub.
 
          Options:
-           --platform {github,gitlab}  Git platform (required).
+           --platform {github,gitlab}  Git platform (default: gitlab).
            --account-name NAME         Account name, e.g. 'skp1964-dev' (required).
            --email EMAIL               Registered email (required).
            --username USER             Git platform username (default: email).
@@ -411,9 +412,12 @@ Examples
    bwforgectl sync vault --yes
        Pull all vault keys to local disk, auto-confirming overwrites.
 
+   bwforgectl account create --account-name my-new-acct --email me@example.com
+       Generate SSH key, create BW login + SSH key items for a new GitLab
+       account (platform defaults to gitlab).
+
    bwforgectl account create --platform github --account-name my-new-acct --email me@example.com
-       Generate SSH key, create BW login + SSH key items for a new GitHub
-       account, and optionally install the SSH config stanza.
+       Same, but for a GitHub account.
 
    bwforgectl account create --platform github --account-name my-new-acct --email me@example.com --install-config
        Same as above but also add the Host stanza to ~/.ssh/config automatically.
@@ -1795,7 +1799,7 @@ def build_parser() -> argparse.ArgumentParser:
     g_acct_auth.add_argument("--config-dir", help="Credential store directory (default: ~/.config/bwforgectl).")
     g_acct_auth.add_argument("--no-keyring", action="store_true",
                              help="Force encrypted-file backend instead of OS keyring.")
-    p_acct_create.add_argument("--platform", required=True, choices=["github", "gitlab"], help="Git platform.")
+    p_acct_create.add_argument("--platform", default="gitlab", choices=["github", "gitlab"], help="Git platform (default: gitlab).")
     p_acct_create.add_argument("--account-name", required=True, help="Account name (e.g., skp1964-dev).")
     p_acct_create.add_argument("--email", required=True, help="Registered email for the account.")
     p_acct_create.add_argument("--username", help="Git platform username (defaults to email).")
